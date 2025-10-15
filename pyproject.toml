@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mario"
+version = "0.1.0"
+description = "A short description of your project"
+authors = [
+    {name = "Ozan Vardal", email = "deprecatedwetware@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "numpy>=1.24.0",
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+	"jupyterlab>=4.4.7"
+]
+
+[tool.setuptools]
+packages = ["mario"]  # Your package directory
