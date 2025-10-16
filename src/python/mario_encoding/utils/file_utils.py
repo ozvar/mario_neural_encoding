@@ -1,5 +1,5 @@
 from pathlib import Path
-from config import PATHS
+from mario_encoding.config import PATHS
 
 
 def get_subject_session_path(subject, session, datatype='func'):
