@@ -1,6 +1,6 @@
 from pathlib import Path
 
-PROJECT_DIR = Path(__file__).parent.parent.resolve()
+PROJECT_DIR = Path(__file__).parent.parent.parent.parent.resolve()
 
 PATHS = {
         'raw_data': PROJECT_DIR / '..' / 'mario.replays' / 'sourcedata' / 'mario',
@@ -12,6 +12,6 @@ PATHS = {
 PARAMETERS = {}
 
 
-# Ensure directories exist
-for path in PATHS.values():
-    path.mkdir(parents=True, exist_ok=True)
+# Ensure non-data directories exist
+PATHS['figures'].mkdir(parents=True, exist_ok=True)
+PATHS['logs'].mkdir(parents=True, exist_ok=True)
