@@ -7,6 +7,9 @@
 !/data/raw/.gitkeep
 !/data/processed/.gitkeep
 
+# Analysis results and logs
+/results/*
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
