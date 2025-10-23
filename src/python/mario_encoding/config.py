@@ -4,6 +4,7 @@ PROJECT_DIR = Path(__file__).parent.parent.parent.parent.resolve()
 
 PATHS = {
     'raw_data': PROJECT_DIR / '..' / 'mario.replays' / 'sourcedata' / 'mario',
+    'preprocessed_sidecars': PROJECT_DIR / '..' / 'mario.replays' / 'outputdata',
     'fmriprep_data': PROJECT_DIR / '..' / 'mario.fmriprep',
     'figures': PROJECT_DIR / 'results' / 'figures',
     'logs': PROJECT_DIR / 'results' / 'logs',
