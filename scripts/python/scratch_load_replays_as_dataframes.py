@@ -35,8 +35,8 @@ if __name__ == '__main__':
 
     df = json_to_dataframe(data, exclude_keys) 
 
-    repetitions_df = load_replay_data(PATHS['preprocessed_sidecars'] / 'replays', type='metadata')
-    repetitions_variables = load_replay_data(PATHS['preprocessed_sidecars'] / 'replays', type='variables')
+    repetitions_df = load_replay_data(PATHS['preprocessed_sidecars'], type='metadata')
+    repetitions_variables = load_replay_data(PATHS['preprocessed_sidecars'], type='variables')
 
     first = repetitions_variables.iloc[0]
     df = first.to_frame().T
