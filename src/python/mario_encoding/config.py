@@ -7,6 +7,7 @@ PATHS = {
     'replay_variables_jsons': PROJECT_DIR / '..' / 'mario.replays' / 'outputdata' / 'replays',
     'scene_clip_jsons': PROJECT_DIR / '..' / 'mario.scenes' / 'outputdata' / 'scene_clips',
     'bids_annotated_tsvs': PROJECT_DIR / '..' / 'mario.annotations' / 'outputdata' / 'annotated_events',
+    'per_session_framewise_tsvs': PROJECT_DIR / 'inputs' / 'preprocessed_behav_data',
     'fmriprep_data': PROJECT_DIR / '..' / 'mario.fmriprep',
     'figures': PROJECT_DIR / 'results' / 'figures',
     'logs': PROJECT_DIR / 'results' / 'logs',
