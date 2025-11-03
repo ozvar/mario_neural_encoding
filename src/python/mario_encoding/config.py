@@ -14,7 +14,15 @@ PATHS = {
     'src_python': PROJECT_DIR / 'src' / 'python',
 }
 
-PARAMETERS = {}
+PARAMETERS = {
+        'event_frame_duration_dict': {
+            'event_coin_collected': 30,
+            'event_brick_smashed': 30,
+            'event_powerup_collected': 114,
+            'event_hit_powerup_lost': 35,
+            'event_hit_life_lost': 180
+            }
+        }
 
 # Ensure non-data directories exist
 PATHS['figures'].mkdir(parents=True, exist_ok=True)
