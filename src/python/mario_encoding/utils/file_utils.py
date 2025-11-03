@@ -464,11 +464,19 @@ def create_event_columns(variables_df, annotations_df, event_types):
         stim_file = event_row['stim_file']
         # Find matching frames in variables
         col_name = f"event_{trial_type.lower().replace('/', '_')}"
-        mask = (
-            (variables_df['relative_path'] == stim_file) &
-            (variables_df['frame_index'] >= frame_start) &
-            (variables_df['frame_index'] < frame_stop)
-        )
+        # Handle single-frame events (frame_start == frame_stop)
+        if frame_start == frame_stop:
+            mask = (
+                (variables_df['relative_path'] == stim_file) &
+                (variables_df['frame_index'] == frame_start)
+            )
+        else:
+            # Multi-frame events use exclusive upper bound
+            mask = (
+                (variables_df['relative_path'] == stim_file) &
+                (variables_df['frame_index'] >= frame_start) &
+                (variables_df['frame_index'] < frame_stop)
+            )
         variables_df.loc[mask, col_name] = 1
     
     return variables_df
