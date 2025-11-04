@@ -67,11 +67,6 @@ level_info_columns = [
         ]
 
 
-not_sure_but_drop = [
-        'fireball_counter' # haven't encountered non-zero instance of this yet
-        ]
-
-
 redundant_scene_features = [
         'x Hi (entry)',
         'x Lo (entry)',
@@ -80,6 +75,11 @@ redundant_scene_features = [
         'Entry point',
         'Exit point',
         'Layout'
+        ]
+
+
+not_sure_but_drop = [
+        'fireball_counter' # haven't encountered non-zero instance of this yet
         ]
 
 
@@ -174,9 +174,9 @@ def merge_scene_features(df, mastersheet_path):
 
 
 if __name__ == '__main__':
-    fp = '/home/ozvar/Git/cneuromod/mario_neural_encoding/inputs/preprocessed_behav_data/sub-01/ses-001/run_framewise/sub-01_ses-001_run-04_desc-framewise_merged.tsv'
+    filepath = '/home/ozvar/Git/cneuromod/mario_neural_encoding/inputs/preprocessed_behav_data/sub-01/ses-001/run_framewise/sub-01_ses-001_run-04_desc-framewise_merged.tsv'
     mastersheet_path = '/home/ozvar/Git/cneuromod/mario.scenes/sourcedata/scenes_info/scenes_mastersheet.csv'
-    df = pd.read_csv(fp, sep='\t')
+    df = pd.read_csv(filepath, sep='\t')
     # Merge df with scene features from scenes mastersheet
     df = merge_scene_features(df, mastersheet_path)
     # Binarize mario powerstate so we know what kind of mario is on screen
