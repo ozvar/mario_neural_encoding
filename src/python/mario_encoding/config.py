@@ -11,6 +11,7 @@ PATHS = {
     'per_run_combined_repvars_and_bids_events': PROJECT_DIR / 'inputs' / 'per_run_combined_repvars_and_bids_events',
     'per_run_pruned_features': PROJECT_DIR / 'inputs' / 'per_run_pruned_features',
     'per_run_downsampled_to_TR': PROJECT_DIR / 'inputs' / 'per_run_downsampled_to_TR',
+    'practice_phase_metadata': PROJECT_DIR / 'inputs' / 'practice_phase_metadata',
     'fmriprep_data': PROJECT_DIR / '..' / 'mario.fmriprep',
     'figures': PROJECT_DIR / 'results' / 'figures',
     'logs': PROJECT_DIR / 'results' / 'logs',
