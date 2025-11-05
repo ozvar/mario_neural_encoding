@@ -13,7 +13,7 @@ from mario_encoding.config import PATHS, PARAMETERS
 # Column groups to drop
 COLUMNS_TO_DROP = {
     'metadata': ['filename', 'subject', 'session', 'actions', 'rep_id', 'phase'],
-    'timing': ['frame_index', 'rep_onset', 'rep_duration', 'frame_time_in_run'],
+    'timing': ['frame_index', 'rep_onset', 'rep_duration'],
     'unused_buttons': ['null', 'SELECT', 'START'],
     'level_descriptors': ['world', 'stage', 'level', 'area', 'scene', 'level_layout', 'levelHi', 'levelLo'],
     'position': ['player_x_posHi', 'player_x_posLo', 'player_y_screen', 'player_y_pos', 'xscrollLo', 'xscrollHi'],
