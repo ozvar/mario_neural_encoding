@@ -65,7 +65,6 @@ def identify_practice_runs_from_bids(subject, session, events_path=PATHS['bids_a
         Dictionary mapping run number to phase ('practice', 'discovery', or 'mixed')
     """
     events_files = find_annotated_events(subject=subject, session=session, events_path=events_path)
-    
     if not events_files:
         raise ValueError(f"No events files found for sub-{subject:02d}_ses-{session:03d}")
     
@@ -75,16 +74,13 @@ def identify_practice_runs_from_bids(subject, session, events_path=PATHS['bids_a
     for filepath in sorted(events_files):
         run = extract_run_from_events_filename(filepath)
         events = pd.read_csv(filepath, sep='\t')
-        
         # Check if phase column exists
         if 'phase' not in events.columns:
             print(f"  Warning: Run {run:02d} has no 'phase' column, skipping")
             run_phases[run] = 'unknown'
             continue
-        
         # Get unique phases (excluding NaN)
         phases = events['phase'].dropna().unique()
-        
         if len(phases) == 0:
             print(f"  Warning: Run {run:02d} has no phase information, skipping")
             run_phases[run] = 'unknown'
@@ -153,6 +149,67 @@ def compute_run_onsets(subject, session, practice_runs, per_run_downsampled_path
     return np.array(onsets[:-1]), total_trs, n_trs_per_run
 
 
+def compute_level_onsets(subject, session, practice_runs, 
+                         events_path=PATHS['bids_annotated_tsvs'],
+                         per_run_downsampled_path=PATHS['per_run_downsampled_to_TR']):
+    """
+    Compute level_onsets array from BIDS events TSV files.
+    
+    level_onsets is an array of cumulative TR counts where each level starts,
+    used for within-level z-scoring of behavioral features.
+    
+    Parameters:
+    -----------
+    subject : int
+        Subject number
+    session : int
+        Session number
+    practice_runs : list of int
+        Run numbers to include
+    events_path : Path
+        Path to BIDS annotated events directory
+    per_run_downsampled_path : Path
+        Path to downsampled data directory
+        
+    Returns:
+    --------
+    level_onsets : array of int
+        Cumulative TR indices where each level starts
+    n_levels : int
+        Total number of level repetitions across all practice runs
+    """
+    level_onsets = [0]
+    current_tr = 0
+    n_levels = 0
+    
+    for run in practice_runs:
+        # Load events file
+        events_filepath = get_annotated_events_path(subject, session, run, events_path)
+        if not events_filepath.exists():
+            raise FileNotFoundError(f"Events file not found: {events_filepath}")
+        events = pd.read_csv(events_filepath, sep='\t')
+        # Load downsampled file to get TRs per level
+        downsampled_filepath = get_run_downsampled_path(subject, session, run, per_run_downsampled_path)
+        if not downsampled_filepath.exists():
+            raise FileNotFoundError(f"Downsampled file not found: {downsampled_filepath}")
+        downsampled = pd.read_csv(downsampled_filepath, sep='\t')
+        # Check if level column exists
+        if 'level' not in downsampled.columns:
+            raise ValueError(f"'level' column not found in {downsampled_filepath}")
+        # Find level changes in downsampled data
+        level_changes = downsampled['level'].ne(downsampled['level'].shift())
+        level_change_indices = np.where(level_changes)[0]
+        # Convert to cumulative TR indices
+        for idx in level_change_indices[1:]:  # Skip first (already at 0)
+            level_onsets.append(current_tr + idx)
+            n_levels += 1
+        # Update current_tr for next run
+        current_tr += len(downsampled)
+        n_levels += 1  # Count the last level in this run
+    
+    return np.array(level_onsets), n_levels
+
+
 def get_practice_metadata_path(subject, session, practice_metadata_path=PATHS['practice_phase_metadata']):
     """Get path for practice metadata JSON."""
     practice_metadata_path.mkdir(parents=True, exist_ok=True)
@@ -160,7 +217,8 @@ def get_practice_metadata_path(subject, session, practice_metadata_path=PATHS['p
 
 
 def save_practice_metadata(subject, session, practice_runs, run_onsets, n_samples, 
-                           n_trs_per_run, run_phases, practice_metadata_path=PATHS['practice_phase_metadata']):
+                           n_trs_per_run, level_onsets, n_levels, run_phases, 
+                           practice_metadata_path=PATHS['practice_phase_metadata']):
     """
     Save practice phase metadata as JSON.
     
@@ -178,6 +236,10 @@ def save_practice_metadata(subject, session, practice_runs, run_onsets, n_sample
         Total TRs
     n_trs_per_run : list of int
         TRs per run
+    level_onsets : array of int
+        Cumulative TR counts where each level starts
+    n_levels : int
+        Total number of level repetitions
     run_phases : dict
         Phase information for all runs
     practice_metadata_path : Path
@@ -196,6 +258,8 @@ def save_practice_metadata(subject, session, practice_runs, run_onsets, n_sample
         'n_samples': n_samples,
         'n_runs': len(practice_runs),
         'n_trs_per_run': n_trs_per_run,
+        'level_onsets': level_onsets.tolist(),
+        'n_levels': n_levels,
         'run_phases': run_phases
     }
     
@@ -267,27 +331,29 @@ def process_session_practice_metadata(subject, session,
                 'n_practice_runs': 0,
                 'status': 'no practice runs found'
             }
-        
         print(f"    Found {len(practice_runs)} practice runs: {practice_runs}")
-        
         # Compute run onsets
         run_onsets, n_samples, n_trs_per_run = compute_run_onsets(
             subject, session, practice_runs, per_run_downsampled_path
         )
-        
         print(f"    Total TRs: {n_samples}")
-        
+        # Compute level onsets
+        level_onsets, n_levels = compute_level_onsets(
+            subject, session, practice_runs, events_path, per_run_downsampled_path
+        )
+        print(f"    Total levels: {n_levels}")
         # Save metadata
         filepath = save_practice_metadata(
             subject, session, practice_runs, run_onsets, n_samples,
-            n_trs_per_run, run_phases, practice_metadata_path
+            n_trs_per_run, level_onsets, n_levels, run_phases, practice_metadata_path
         )
-        
+
         return {
             'subject': subject,
             'session': session,
             'n_practice_runs': len(practice_runs),
             'n_samples': n_samples,
+            'n_levels': n_levels,
             'filepath': filepath,
             'status': 'success'
         }
@@ -314,26 +380,20 @@ def process_all_practice_metadata(events_path=PATHS['bids_annotated_tsvs'],
     pd.DataFrame with processing results
     """
     sessions = find_all_sessions_with_events(events_path)
-    
     if not sessions:
         raise ValueError(f"No sessions with events files found in {events_path}")
-    
     print(f"Found {len(sessions)} sessions to process")
     print()
-    
     results = []
     current_subject = None
-    
     for subject, session in sessions:
         if subject != current_subject:
             current_subject = subject
             print(f"Processing sub-{subject:02d}...")
-        
         result = process_session_practice_metadata(
             subject, session, events_path, per_run_downsampled_path, practice_metadata_path
         )
         results.append(result)
-        
         if result['status'] == 'success':
             print(f"    Saved metadata: {result['n_practice_runs']} runs, {result['n_samples']} TRs")
         else:
@@ -363,6 +423,7 @@ if __name__ == '__main__':
         print(f"\nPractice phase statistics:")
         print(f"  Average runs per session: {successful['n_practice_runs'].mean():.1f}")
         print(f"  Average TRs per session: {successful['n_samples'].mean():.0f}")
+        print(f"  Average levels per session: {successful['n_levels'].mean():.1f}")
         print(f"  Total practice runs across all sessions: {successful['n_practice_runs'].sum()}")
     
     if (results['status'] != 'success').any():
