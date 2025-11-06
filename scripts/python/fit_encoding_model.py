@@ -117,25 +117,6 @@ def load_practice_fmri(subject, session, practice_runs, fmriprep_path):
     return Y
 
 
-def zscore_levels(data, level_onsets):
-    """
-    Z-score data within each level repetition separately.
-    
-    Parameters:
-    -----------
-    data : array of shape (n_samples, n_features)
-    level_onsets : array of int
-        
-    Returns:
-    --------
-    data_zscored : array of shape (n_samples, n_features)
-    """
-    if len(level_onsets) == 0:
-        logging.warning("Empty level_onsets, z-scoring entire array")
-        return zscore(data, axis=0)
-    data_splits = np.split(data.astype(np.float64), level_onsets[1:])
-    data_zscored = np.concatenate([zscore(level, axis=0) for level in data_splits], axis=0)
-    return data_zscored.astype(data.dtype)
 
 
 def validate_session_files(subject, session, metadata, downsampled_path, fmriprep_path):
@@ -257,17 +238,17 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     X : array of shape (n_samples, n_features)
     Y : array of shape (n_samples, n_grayordinates)
     run_onsets : array of int
-    level_onsets : array of int
+    level_onsets : array of int (unused, kept for compatibility)
     logger : logging.Logger
         
     Returns:
     --------
     X_preprocessed : array of shape (n_samples, n_features)
-    Y_preprocessed : array of shape (n_samples, n_grayordinates)
+    Y_preprocessed : array of shape (n_samples, n_grayordinates_valid)
     """
     logger.info("Preprocessing data...")
-    logger.info("  Z-scoring features within levels")
-    X = zscore_levels(X, level_onsets)
+    logger.info("  Z-scoring features within runs")
+    X = zscore_runs(X, run_onsets)
     logger.info("  Z-scoring fMRI within runs")
     Y = zscore_runs(Y, run_onsets)
     X = np.nan_to_num(X)
@@ -369,8 +350,12 @@ def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, te
     
     model_path = models_path / f'{base_name}_model.pkl'
     model_path.parent.mkdir(parents=True, exist_ok=True)
+    # Remove CV generator before pickling (it's not needed for prediction)
+    pipeline_copy = pipeline
+    if hasattr(pipeline[-1], 'cv'):
+        pipeline[-1].cv = None
     with open(model_path, 'wb') as f:
-        pickle.dump(pipeline, f)
+        pickle.dump(pipeline_copy, f)
     logger.info(f"Saved model to: {model_path}")
     
     cv_scores_file = cv_scores_path / f'{base_name}_cv_scores.npy'
@@ -434,6 +419,52 @@ def main():
         args.subject, test_sessions, PATHS['practice_phase_metadata'],
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
+    
+    logger.info("\n" + "="*80)
+    logger.info("FEATURE FILTERING")
+    logger.info("="*80)
+    logger.info("Identifying zero-variance features on training data...")
+    train_feature_var = X_train.var(axis=0)
+    valid_features_mask = train_feature_var > 1e-10
+    n_features_original = X_train.shape[1]
+    n_features_kept = valid_features_mask.sum()
+    n_features_dropped = n_features_original - n_features_kept
+    logger.info(f"  Original features: {n_features_original}")
+    logger.info(f"  Zero-variance features: {n_features_dropped}")
+    logger.info(f"  Kept features: {n_features_kept}")
+    if n_features_dropped > 0:
+        logger.info("Applying feature mask to both train and test data...")
+        X_train = X_train[:, valid_features_mask]
+        X_test = X_test[:, valid_features_mask]
+        logger.info(f"  Train X shape: {X_train.shape}")
+        logger.info(f"  Test X shape: {X_test.shape}")
+    
+    logger.info("\n" + "="*80)
+    logger.info("VOXEL FILTERING")
+    logger.info("="*80)
+    logger.info("Identifying zero-variance voxels on training data (checking within each run)...")
+    run_splits_train = np.split(Y_train, run_onsets_train[1:])
+    zero_var_in_any_run = np.zeros(Y_train.shape[1], dtype=bool)
+    for i, run_data in enumerate(run_splits_train):
+        run_var = run_data.var(axis=0)
+        zero_var_this_run = (run_var < 1e-10)
+        zero_var_in_any_run |= zero_var_this_run
+        if zero_var_this_run.sum() > 0:
+            logger.info(f"  Run {i+1}: {zero_var_this_run.sum()} voxels with zero variance")
+    valid_voxels_mask = ~zero_var_in_any_run
+    n_voxels_original = Y_train.shape[1]
+    n_voxels_kept = valid_voxels_mask.sum()
+    n_voxels_dropped = n_voxels_original - n_voxels_kept
+    logger.info(f"  Original voxels: {n_voxels_original}")
+    logger.info(f"  Zero-variance in at least one run: {n_voxels_dropped} ({n_voxels_dropped/n_voxels_original*100:.2f}%)")
+    logger.info(f"  Kept voxels: {n_voxels_kept}")
+    if n_voxels_dropped > 0:
+        logger.info("Applying voxel mask to both train and test data...")
+        Y_train = Y_train[:, valid_voxels_mask]
+        Y_test = Y_test[:, valid_voxels_mask]
+        logger.info(f"  Train Y shape: {Y_train.shape}")
+        logger.info(f"  Test Y shape: {Y_test.shape}")
+    
     logger.info("\nPreprocessing training data...")
     X_train, Y_train = preprocess_data(X_train, Y_train, run_onsets_train, level_onsets_train, logger)
     logger.info("\nPreprocessing test data...")
