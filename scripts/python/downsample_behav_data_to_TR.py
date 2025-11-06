@@ -3,10 +3,12 @@ Downsample framewise behavioral features to TR for fMRI encoding model analysis.
 
 This script takes pruned behavioral features at ~60fps and downsamples them to match
 the fMRI sampling rate (TR = 1.49s). Binary features are averaged (proportion active),
-continuous features are averaged within each TR window.
+continuous features are averaged within each TR window. Handles inter-trial intervals
+and post-task baseline by filling gaps with zeros to match fMRI acquisition length.
 """
 import pandas as pd
 import numpy as np
+import nibabel as nib
 from pathlib import Path
 from mario_encoding.config import PATHS, PARAMETERS
 
@@ -117,18 +119,50 @@ def downsample_continuous_features(group, continuous_cols, method='mean'):
         raise ValueError(f"Unknown method: {method}")
 
 
-def downsample_run_to_TR(df, tr, frame_rate, binary_method='mean', continuous_method='mean'):
+def get_fmri_n_trs(subject, session, run, fmriprep_path=PATHS['fmriprep_data']):
     """
-    Downsample a single run from framewise to TR sampling rate.
+    Get number of TRs from CIFTI file.
+    
+    Parameters:
+    -----------
+    subject : int
+    session : int
+    run : int
+    fmriprep_path : Path
+        
+    Returns:
+    --------
+    n_trs : int
+    """
+    cifti_path = (fmriprep_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func' /
+                  f'sub-{subject:02d}_ses-{session:03d}_task-mario_run-{run}_space-fsLR_den-91k_bold.dtseries.nii')
+    if not cifti_path.exists():
+        raise FileNotFoundError(f"CIFTI file not found: {cifti_path}")
+    cifti = nib.load(str(cifti_path))
+    return cifti.get_fdata().shape[0]
+
+
+def downsample_run_to_TR(df, subject, session, run, tr, fmriprep_path, binary_method='mean', continuous_method='mean'):
+    """
+    Downsample a single run from framewise to TR sampling rate, matching fMRI length.
+    
+    This function:
+    1. Gets actual fMRI n_TRs from CIFTI file
+    2. Creates complete TR grid (0 to n_TRs-1)
+    3. Aggregates frames into TRs where behavioral data exists
+    4. Fills gaps (ITIs and post-task baseline) with zeros
     
     Parameters:
     -----------
     df : pd.DataFrame
         Framewise behavioral features with frame_time_in_run column
+    subject : int
+    session : int
+    run : int
     tr : float
         Repetition time in seconds
-    frame_rate : float
-        Frame rate in fps
+    fmriprep_path : Path
+        Path to fMRI data
     binary_method : str
         Aggregation method for binary features
     continuous_method : str
@@ -139,26 +173,28 @@ def downsample_run_to_TR(df, tr, frame_rate, binary_method='mean', continuous_me
     pd.DataFrame
         Downsampled features (one row per TR) with TR_index and TR_time columns
     """
-    # Create TR bins
+    n_trs_fmri = get_fmri_n_trs(subject, session, run, fmriprep_path)
     df = create_TR_bins(df, tr)
-    # Identify feature types
     binary_cols, continuous_cols = identify_feature_types(df, metadata_cols=['TR_bin', 'frame_time_in_run'])
-    # Aggregate by TR bin
-    aggregated_data = []
+    all_feature_cols = binary_cols + continuous_cols
+    tr_data_dict = {}
     for tr_bin, group in df.groupby('TR_bin'):
-        # Aggregate binary features
+        if tr_bin >= n_trs_fmri:
+            continue
         binary_agg = downsample_binary_features(group, binary_cols, method=binary_method)
-        # Aggregate continuous features
         continuous_agg = downsample_continuous_features(group, continuous_cols, method=continuous_method)
-        # Combine
         tr_data = pd.concat([binary_agg, continuous_agg])
-        aggregated_data.append(tr_data)
-    # Create output dataframe
-    downsampled = pd.DataFrame(aggregated_data)
-    # Add TR metadata
-    downsampled.insert(0, 'TR_index', range(len(downsampled)))
+        tr_data_dict[tr_bin] = tr_data
+    complete_data = []
+    for tr_idx in range(n_trs_fmri):
+        if tr_idx in tr_data_dict:
+            complete_data.append(tr_data_dict[tr_idx])
+        else:
+            baseline_row = pd.Series(0.0, index=all_feature_cols)
+            complete_data.append(baseline_row)
+    downsampled = pd.DataFrame(complete_data)
+    downsampled.insert(0, 'TR_index', range(n_trs_fmri))
     downsampled.insert(1, 'TR_time', downsampled['TR_index'] * tr)
-    
     return downsampled
 
 
@@ -212,7 +248,8 @@ def extract_subject_session_run_from_path(filepath):
         raise ValueError(f"Could not parse subject/session/run from filename: {filename}")
 
 
-def process_run_downsampling(filepath, tr, frame_rate, binary_method='mean', continuous_method='mean', per_run_downsampled_path=PATHS['per_run_downsampled_to_TR']):
+def process_run_downsampling(filepath, tr, frame_rate, fmriprep_path, binary_method='mean', 
+                            continuous_method='mean', per_run_downsampled_path=PATHS['per_run_downsampled_to_TR']):
     """
     Process a single run file: downsample from framewise to TR.
     
@@ -223,7 +260,9 @@ def process_run_downsampling(filepath, tr, frame_rate, binary_method='mean', con
     tr : float
         Repetition time in seconds
     frame_rate : float
-        Frame rate in fps
+        Frame rate in fps (unused but kept for compatibility)
+    fmriprep_path : Path
+        Path to fMRI data directory
     binary_method : str
         Aggregation method for binary features
     continuous_method : str
@@ -237,24 +276,22 @@ def process_run_downsampling(filepath, tr, frame_rate, binary_method='mean', con
     """
     subject, session, run = extract_subject_session_run_from_path(filepath)
     print(f"  Processing run {run:02d}...")
-    
     try:
-        # Load pruned features
         df = pd.read_csv(filepath, sep='\t')
         n_frames_input = len(df)
-        # Downsample to TR
         downsampled = downsample_run_to_TR(
             df=df,
+            subject=subject,
+            session=session,
+            run=run,
             tr=tr,
-            frame_rate=frame_rate,
+            fmriprep_path=fmriprep_path,
             binary_method=binary_method,
             continuous_method=continuous_method
         )
         n_TRs_output = len(downsampled)
-        # Save
         output_filepath = save_run_downsampled_tsv(downsampled, subject, session, run, per_run_downsampled_path)
         compression_ratio = n_frames_input / n_TRs_output
-
         return {
             'subject': subject,
             'session': session,
@@ -265,7 +302,6 @@ def process_run_downsampling(filepath, tr, frame_rate, binary_method='mean', con
             'compression_ratio': compression_ratio,
             'status': 'success'
         }
-
     except Exception as e:
         return {
             'subject': subject,
@@ -281,7 +317,8 @@ def process_run_downsampling(filepath, tr, frame_rate, binary_method='mean', con
 
 def process_all_run_downsampling(tr, frame_rate, binary_method='mean', continuous_method='mean',
                                  per_run_pruned_path=PATHS['per_run_pruned_features'],
-                                 per_run_downsampled_path=PATHS['per_run_downsampled_to_TR']):
+                                 per_run_downsampled_path=PATHS['per_run_downsampled_to_TR'],
+                                 fmriprep_path=PATHS['fmriprep_data']):
     """
     Process all run-level pruned feature files: downsample to TR.
     
@@ -299,44 +336,39 @@ def process_all_run_downsampling(tr, frame_rate, binary_method='mean', continuou
         Input directory path
     per_run_downsampled_path : Path
         Output directory path
+    fmriprep_path : Path
+        Path to fMRI data directory
         
     Returns:
     --------
     pd.DataFrame with processing results for all runs
     """
     pruned_files = find_run_pruned_feature_files(per_run_pruned_path=per_run_pruned_path)
-    
     if not pruned_files:
         raise ValueError(f"No pruned feature files found in {per_run_pruned_path}")
-    
     print(f"Found {len(pruned_files)} run files to process")
     print()
-    
     results = []
     current_session = None
-    
     for filepath in sorted(pruned_files):
         subject, session, run = extract_subject_session_run_from_path(filepath)
-        
         if (subject, session) != current_session:
             current_session = (subject, session)
             print(f"Processing sub-{subject:02d}_ses-{session:03d}...")
-        
         result = process_run_downsampling(
             filepath=filepath,
             tr=tr,
             frame_rate=frame_rate,
+            fmriprep_path=fmriprep_path,
             binary_method=binary_method,
             continuous_method=continuous_method,
             per_run_downsampled_path=per_run_downsampled_path
         )
         results.append(result)
-        
         if result['status'] == 'success':
             print(f"    Saved {result['n_TRs_output']} TRs ({result['compression_ratio']:.1f}x compression) to {Path(result['filepath']).name}")
         else:
             print(f"    Failed: {result['status']}")
-    
     return pd.DataFrame(results)
 
 
