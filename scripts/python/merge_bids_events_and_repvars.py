@@ -10,6 +10,18 @@ from pathlib import Path
 from mario_encoding.config import PATHS
 
 
+
+# Canonical set of all possible BIDS event types
+# Ensures consistent column structure across all runs regardless of which events occurred
+CANONICAL_EVENT_TYPES = [
+    'brick_smashed',
+    'coin_collected',
+    'hit_life_lost',
+    'hit_powerup_lost',
+    'powerup_collected'
+]
+
+
 def get_annotated_events_path(subject, session, run, events_path=PATHS['bids_annotated_tsvs']):
     """Get annotated events TSV file path."""
     base = events_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func'
@@ -39,17 +51,8 @@ def extract_scene_id(scene_string):
 
 
 def identify_event_types(annotations_df):
-    """Identify event trial types (excluding buttons, scenes, gym-retro_game)."""
-    button_actions = {'A', 'B', 'LEFT', 'RIGHT', 'UP', 'DOWN'}
-    exclude_types = {'gym-retro_game'}
-    all_trial_types = set(annotations_df['trial_type'].unique())
-    event_types = []
-    for trial_type in all_trial_types:
-        if (trial_type not in button_actions and 
-            trial_type not in exclude_types and
-            not trial_type.startswith('scene-')):
-            event_types.append(trial_type)
-    return sorted(event_types)
+    """Return canonical event types (ensures consistent columns across all runs)."""
+    return CANONICAL_EVENT_TYPES
 
 
 def extract_relative_path(absolute_path):
