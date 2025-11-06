@@ -9,7 +9,7 @@ import json
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from mario_encoding.config import PATHS
+from mario_encoding.config import PATHS, PARAMETERS
 
 
 def get_annotated_events_path(subject, session, run, events_path=PATHS['bids_annotated_tsvs']):
@@ -67,7 +67,6 @@ def identify_practice_runs_from_bids(subject, session, events_path=PATHS['bids_a
     events_files = find_annotated_events(subject=subject, session=session, events_path=events_path)
     if not events_files:
         raise ValueError(f"No events files found for sub-{subject:02d}_ses-{session:03d}")
-    
     practice_runs = []
     run_phases = {}
     
@@ -132,7 +131,6 @@ def compute_run_onsets(subject, session, practice_runs, per_run_downsampled_path
     onsets = [0]
     n_trs_per_run = []
     total_trs = 0
-    
     for run in practice_runs:
         filepath = get_run_downsampled_path(subject, session, run, per_run_downsampled_path)
         
@@ -151,7 +149,8 @@ def compute_run_onsets(subject, session, practice_runs, per_run_downsampled_path
 
 def compute_level_onsets(subject, session, practice_runs, 
                          events_path=PATHS['bids_annotated_tsvs'],
-                         per_run_downsampled_path=PATHS['per_run_downsampled_to_TR']):
+                         per_run_downsampled_path=PATHS['per_run_downsampled_to_TR'],
+                         TR=PARAMETERS['TR']):
     """
     Compute level_onsets array from BIDS events TSV files.
     
@@ -170,6 +169,8 @@ def compute_level_onsets(subject, session, practice_runs,
         Path to BIDS annotated events directory
     per_run_downsampled_path : Path
         Path to downsampled data directory
+    TR : float
+        Repetition time in seconds
         
     Returns:
     --------
@@ -188,23 +189,26 @@ def compute_level_onsets(subject, session, practice_runs,
         if not events_filepath.exists():
             raise FileNotFoundError(f"Events file not found: {events_filepath}")
         events = pd.read_csv(events_filepath, sep='\t')
-        # Load downsampled file to get TRs per level
+        # Check if level column exists
+        if 'level' not in events.columns:
+            raise ValueError(f"'level' column not found in {events_filepath}")
+        # Load downsampled file to get total TRs for this run
         downsampled_filepath = get_run_downsampled_path(subject, session, run, per_run_downsampled_path)
         if not downsampled_filepath.exists():
             raise FileNotFoundError(f"Downsampled file not found: {downsampled_filepath}")
         downsampled = pd.read_csv(downsampled_filepath, sep='\t')
-        # Check if level column exists
-        if 'level' not in downsampled.columns:
-            raise ValueError(f"'level' column not found in {downsampled_filepath}")
-        # Find level changes in downsampled data
-        level_changes = downsampled['level'].ne(downsampled['level'].shift())
-        level_change_indices = np.where(level_changes)[0]
-        # Convert to cumulative TR indices
-        for idx in level_change_indices[1:]:  # Skip first (already at 0)
-            level_onsets.append(current_tr + idx)
-            n_levels += 1
+        n_trs_this_run = len(downsampled)
+        # Find level changes in events data
+        level_changes = events['level'].ne(events['level'].shift())
+        level_change_rows = events[level_changes]
+        # Convert onset times to TR indices
+        for onset_time in level_change_rows['onset'].values[1:]:  # Skip first (already at 0)
+            tr_index = int(np.round(onset_time / TR))
+            if tr_index < n_trs_this_run:  # Ensure within run bounds
+                level_onsets.append(current_tr + tr_index)
+                n_levels += 1
         # Update current_tr for next run
-        current_tr += len(downsampled)
+        current_tr += n_trs_this_run
         n_levels += 1  # Count the last level in this run
     
     return np.array(level_onsets), n_levels
@@ -262,9 +266,7 @@ def save_practice_metadata(subject, session, practice_runs, run_onsets, n_sample
         'n_levels': n_levels,
         'run_phases': run_phases
     }
-    
     filepath = get_practice_metadata_path(subject, session, practice_metadata_path)
-    
     with open(filepath, 'w') as f:
         json.dump(metadata, f, indent=2)
     
@@ -319,7 +321,6 @@ def process_session_practice_metadata(subject, session,
     dict with processing results
     """
     print(f"  Processing session {session:03d}...")
-    
     try:
         # Identify practice runs
         practice_runs, run_phases = identify_practice_runs_from_bids(subject, session, events_path)
@@ -347,7 +348,7 @@ def process_session_practice_metadata(subject, session,
             subject, session, practice_runs, run_onsets, n_samples,
             n_trs_per_run, level_onsets, n_levels, run_phases, practice_metadata_path
         )
-
+        
         return {
             'subject': subject,
             'session': session,
@@ -394,6 +395,7 @@ def process_all_practice_metadata(events_path=PATHS['bids_annotated_tsvs'],
             subject, session, events_path, per_run_downsampled_path, practice_metadata_path
         )
         results.append(result)
+        
         if result['status'] == 'success':
             print(f"    Saved metadata: {result['n_practice_runs']} runs, {result['n_samples']} TRs")
         else:
