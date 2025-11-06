@@ -15,7 +15,7 @@ COLUMNS_TO_DROP = {
     'metadata': ['filename', 'subject', 'session', 'actions', 'rep_id', 'phase'],
     'timing': ['frame_index', 'rep_onset', 'rep_duration'],
     'unused_buttons': ['null', 'SELECT', 'START'],
-    'level_descriptors': ['world', 'stage', 'level', 'area', 'scene', 'level_layout', 'levelHi', 'levelLo'],
+    'level_descriptors': ['world', 'stage', 'area', 'scene', 'level_layout', 'levelHi', 'levelLo'],
     'position': ['player_x_posHi', 'player_x_posLo', 'player_y_screen', 'player_y_pos', 'xscrollLo', 'xscrollHi'],
     'redundant_status': ['powerup_appear', 'lives', 'player_sprite', 'player_state', 'walk_animation', 'star_timer'],
     'redundant_scene': ['x Hi (entry)', 'x Lo (entry)', 'x Hi (exit)', 'x Lo (exit)', 'Entry point', 'Exit point', 'Layout'],
