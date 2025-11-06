@@ -14,11 +14,11 @@ from mario_encoding.config import PATHS
 # Canonical set of all possible BIDS event types
 # Ensures consistent column structure across all runs regardless of which events occurred
 CANONICAL_EVENT_TYPES = [
-    'brick_smashed',
-    'coin_collected',
-    'hit_life_lost',
-    'hit_powerup_lost',
-    'powerup_collected'
+    'Brick_smashed',
+    'Coin_collected',
+    'Hit/life_lost',
+    'Hit/powerup_lost',
+    'Powerup_collected'
 ]
 
 
