@@ -14,6 +14,7 @@ import numpy as np
 import nibabel as nib
 import pandas as pd
 from sklearn.pipeline import make_pipeline
+from sklearn.model_selection import check_cv
 from sklearn.preprocessing import StandardScaler
 from voxelwise_tutorials.delayer import Delayer
 from voxelwise_tutorials.utils import generate_leave_one_run_out, zscore_runs
@@ -83,7 +84,7 @@ def load_practice_features(subject, session, practice_runs, downsampled_path):
         if not filepath.exists():
             raise FileNotFoundError(f"Downsampled features not found: {filepath}")
         df = pd.read_csv(filepath, sep='\t')
-        feature_cols = [col for col in df.columns if col not in ['TR_index', 'TR_time', 'level']]
+        feature_cols = [col for col in df.columns if col not in ['TR_index', 'TR_time', 'level', 'score', 'time', 'coins']]
         X_list.append(df[feature_cols].values)
     X = np.vstack(X_list).astype('float32')
     return X
@@ -115,8 +116,6 @@ def load_practice_fmri(subject, session, practice_runs, fmriprep_path):
         Y_list.append(fmri_data)
     Y = np.vstack(Y_list).astype('float32')
     return Y
-
-
 
 
 def validate_session_files(subject, session, metadata, downsampled_path, fmriprep_path):
@@ -261,62 +260,36 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
 
 
 def fit_and_evaluate(X_train, Y_train, X_test, Y_test, run_onsets_train, params, backend, logger):
-    """
-    Fit model on training data and evaluate on test data.
-    
-    Note: Delayer is applied BEFORE creating CV object to ensure proper alignment.
-    
-    Parameters:
-    -----------
-    X_train : array of shape (n_samples_train, n_features)
-    Y_train : array of shape (n_samples_train, n_grayordinates)
-    X_test : array of shape (n_samples_test, n_features)
-    Y_test : array of shape (n_samples_test, n_grayordinates)
-    run_onsets_train : array of int
-    params : dict
-    backend : himalaya backend
-    logger : logging.Logger
-        
-    Returns:
-    --------
-    pipeline : fitted Pipeline
-    cv_scores : array of shape (n_grayordinates,)
-    test_scores : array of shape (n_grayordinates,)
-    best_alphas : array of shape (n_grayordinates,)
-    """
-    # Apply Delayer BEFORE creating CV to ensure proper index alignment
-    logger.info("Applying FIR delays to features...")
-    delayer = Delayer(delays=params['delays'])
-    X_train_delayed = delayer.fit_transform(X_train)
-    X_test_delayed = delayer.transform(X_test)
-    logger.info(f"  Train features: {X_train.shape} → {X_train_delayed.shape}")
-    logger.info(f"  Test features: {X_test.shape} → {X_test_delayed.shape}")
-    
-    # NOW create CV object on the delayed data
     alphas = np.logspace(params['alpha_min'], params['alpha_max'], params['n_alphas'])
     logger.info(f"Testing {len(alphas)} alpha values from 10^{params['alpha_min']} to 10^{params['alpha_max']}")
-    cv = generate_leave_one_run_out(X_train_delayed.shape[0], run_onsets_train)
-    logger.info(f"Using leave-one-run-out CV with {len(list(cv))} folds")
     
-    # Create pipeline WITHOUT Delayer (already applied)
+    # Create CV object and make it reusable
+    cv = generate_leave_one_run_out(X_train.shape[0], run_onsets_train)
+    cv = check_cv(cv)  # Convert generator to reusable object
+    logger.info(f"Using leave-one-run-out CV with {cv.get_n_splits()} folds")
+    
     pipeline = make_pipeline(
         StandardScaler(with_mean=True, with_std=False),
+        Delayer(delays=params['delays']),
         KernelRidgeCV(alphas=alphas, cv=cv, solver_params=params['solver_params'])
     )
     
     logger.info("Fitting model...")
-    pipeline.fit(X_train_delayed, Y_train)
+    pipeline.fit(X_train, Y_train)
     logger.info("  Model fitting complete")
-    cv_scores = backend.to_numpy(pipeline.score(X_train_delayed, Y_train))
+    
+    cv_scores = backend.to_numpy(pipeline.score(X_train, Y_train))
     best_alphas = backend.to_numpy(pipeline[-1].best_alphas_)
     logger.info(f"  Mean CV R² score: {cv_scores.mean():.4f} (std: {cv_scores.std():.4f})")
     logger.info(f"  Median CV R² score: {np.median(cv_scores):.4f}")
     logger.info(f"  Max CV R² score: {cv_scores.max():.4f}")
+    
     logger.info("Evaluating on test set...")
-    test_scores = backend.to_numpy(pipeline.score(X_test_delayed, Y_test))
+    test_scores = backend.to_numpy(pipeline.score(X_test, Y_test))
     logger.info(f"  Mean test R² score: {test_scores.mean():.4f} (std: {test_scores.std():.4f})")
     logger.info(f"  Median test R² score: {np.median(test_scores):.4f}")
     logger.info(f"  Max test R² score: {test_scores.max():.4f}")
+    
     return pipeline, cv_scores, test_scores, best_alphas
 
 
@@ -373,13 +346,13 @@ def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, te
 
 def filter_zero_variance_features(X_train, X_test, run_onsets_train, logger):
     """
-    Filter features with zero variance in any training run.
+    Filter features with zero variance across the entire training set.
     
     Parameters:
     -----------
     X_train : array of shape (n_samples_train, n_features)
     X_test : array of shape (n_samples_test, n_features)
-    run_onsets_train : array of int
+    run_onsets_train : array of int (unused, kept for API consistency)
     logger : logging.Logger
         
     Returns:
@@ -388,22 +361,16 @@ def filter_zero_variance_features(X_train, X_test, run_onsets_train, logger):
     X_test_filtered : array
     valid_features_mask : boolean array
     """
-    logger.info("Identifying zero-variance features on training data (checking within each run)...")
-    run_splits_train_X = np.split(X_train, run_onsets_train[1:])
-    zero_var_in_any_run_X = np.zeros(X_train.shape[1], dtype=bool)
-    for i, run_data in enumerate(run_splits_train_X):
-        run_var = run_data.var(axis=0)
-        zero_var_this_run = (run_var < 1e-10)
-        zero_var_in_any_run_X |= zero_var_this_run
-        if zero_var_this_run.sum() > 0:
-            logger.info(f"  Run {i+1}: {zero_var_this_run.sum()} features with zero variance")
+    logger.info("Identifying zero-variance features on training data...")
+    train_feature_var = X_train.var(axis=0)
+    valid_features_mask = train_feature_var > 1e-10
     
-    valid_features_mask = ~zero_var_in_any_run_X
     n_features_original = X_train.shape[1]
     n_features_kept = valid_features_mask.sum()
     n_features_dropped = n_features_original - n_features_kept
+    
     logger.info(f"  Original features: {n_features_original}")
-    logger.info(f"  Zero-variance in at least one run: {n_features_dropped}")
+    logger.info(f"  Zero-variance features: {n_features_dropped}")
     logger.info(f"  Kept features: {n_features_kept}")
     
     if n_features_dropped > 0:
