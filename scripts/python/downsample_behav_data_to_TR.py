@@ -17,7 +17,7 @@ def identify_feature_types(df, metadata_cols=['TR_bin']):
     """
     Classify columns into binary vs continuous features.
     
-    Binary features have only values in {0, 1, NaN}.
+    Binary features have only values in {0, 1, NaN} or are boolean dtype.
     Continuous features have other numeric values.
     
     Parameters:
@@ -30,7 +30,7 @@ def identify_feature_types(df, metadata_cols=['TR_bin']):
     Returns:
     --------
     binary_cols : list
-        Column names with only 0/1 values
+        Column names with only 0/1 values or boolean dtype
     continuous_cols : list
         Column names with other numeric values
     """
@@ -39,7 +39,11 @@ def identify_feature_types(df, metadata_cols=['TR_bin']):
     continuous_cols = []
     
     for col in feature_cols:
-        if df[col].dtype in ['int64', 'float64', 'Int64', 'Float64']:
+        # Check if boolean dtype
+        if df[col].dtype == 'bool':
+            binary_cols.append(col)
+        # Check if numeric dtype
+        elif df[col].dtype in ['int64', 'float64', 'Int64', 'Float64']:
             unique_vals = df[col].dropna().unique()
             if set(unique_vals).issubset({0, 1}):
                 binary_cols.append(col)
