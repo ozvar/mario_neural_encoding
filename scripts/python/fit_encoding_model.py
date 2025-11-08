@@ -260,32 +260,11 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     return X, Y
 
 
-def create_model_pipeline(alphas, cv, params, backend):
-    """
-    Create sklearn-compatible model pipeline.
-    
-    Parameters:
-    -----------
-    alphas : array
-    cv : cross-validation splitter
-    params : dict
-    backend : himalaya backend
-        
-    Returns:
-    --------
-    pipeline : sklearn Pipeline
-    """
-    pipeline = make_pipeline(
-        StandardScaler(with_mean=True, with_std=False),
-        Delayer(delays=params['delays']),
-        KernelRidgeCV(alphas=alphas, cv=cv, solver_params=params['solver_params'])
-    )
-    return pipeline
-
-
 def fit_and_evaluate(X_train, Y_train, X_test, Y_test, run_onsets_train, params, backend, logger):
     """
     Fit model on training data and evaluate on test data.
+    
+    Note: Delayer is applied BEFORE creating CV object to ensure proper alignment.
     
     Parameters:
     -----------
@@ -305,21 +284,36 @@ def fit_and_evaluate(X_train, Y_train, X_test, Y_test, run_onsets_train, params,
     test_scores : array of shape (n_grayordinates,)
     best_alphas : array of shape (n_grayordinates,)
     """
+    # Apply Delayer BEFORE creating CV to ensure proper index alignment
+    logger.info("Applying FIR delays to features...")
+    delayer = Delayer(delays=params['delays'])
+    X_train_delayed = delayer.fit_transform(X_train)
+    X_test_delayed = delayer.transform(X_test)
+    logger.info(f"  Train features: {X_train.shape} → {X_train_delayed.shape}")
+    logger.info(f"  Test features: {X_test.shape} → {X_test_delayed.shape}")
+    
+    # NOW create CV object on the delayed data
     alphas = np.logspace(params['alpha_min'], params['alpha_max'], params['n_alphas'])
     logger.info(f"Testing {len(alphas)} alpha values from 10^{params['alpha_min']} to 10^{params['alpha_max']}")
-    cv = generate_leave_one_run_out(X_train.shape[0], run_onsets_train)
+    cv = generate_leave_one_run_out(X_train_delayed.shape[0], run_onsets_train)
     logger.info(f"Using leave-one-run-out CV with {len(list(cv))} folds")
-    pipeline = create_model_pipeline(alphas, cv, params, backend)
+    
+    # Create pipeline WITHOUT Delayer (already applied)
+    pipeline = make_pipeline(
+        StandardScaler(with_mean=True, with_std=False),
+        KernelRidgeCV(alphas=alphas, cv=cv, solver_params=params['solver_params'])
+    )
+    
     logger.info("Fitting model...")
-    pipeline.fit(X_train, Y_train)
+    pipeline.fit(X_train_delayed, Y_train)
     logger.info("  Model fitting complete")
-    cv_scores = backend.to_numpy(pipeline.score(X_train, Y_train))
+    cv_scores = backend.to_numpy(pipeline.score(X_train_delayed, Y_train))
     best_alphas = backend.to_numpy(pipeline[-1].best_alphas_)
     logger.info(f"  Mean CV R² score: {cv_scores.mean():.4f} (std: {cv_scores.std():.4f})")
     logger.info(f"  Median CV R² score: {np.median(cv_scores):.4f}")
     logger.info(f"  Max CV R² score: {cv_scores.max():.4f}")
     logger.info("Evaluating on test set...")
-    test_scores = backend.to_numpy(pipeline.score(X_test, Y_test))
+    test_scores = backend.to_numpy(pipeline.score(X_test_delayed, Y_test))
     logger.info(f"  Mean test R² score: {test_scores.mean():.4f} (std: {test_scores.std():.4f})")
     logger.info(f"  Median test R² score: {np.median(test_scores):.4f}")
     logger.info(f"  Max test R² score: {test_scores.max():.4f}")
@@ -327,7 +321,7 @@ def fit_and_evaluate(X_train, Y_train, X_test, Y_test, run_onsets_train, params,
 
 
 def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, test_scores, 
-                best_alphas, models_path, cv_scores_path, logger):
+                best_alphas, voxel_mask, models_path, cv_scores_path, logger):
     """
     Save fitted model and evaluation results.
     
@@ -340,6 +334,7 @@ def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, te
     cv_scores : array
     test_scores : array
     best_alphas : array
+    voxel_mask : boolean array
     models_path : Path
     cv_scores_path : Path
     logger : logging.Logger
@@ -370,6 +365,100 @@ def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, te
     alphas_file = cv_scores_path / f'{base_name}_best_alphas.npy'
     np.save(alphas_file, best_alphas)
     logger.info(f"Saved best alphas to: {alphas_file}")
+    
+    voxel_mask_file = cv_scores_path / f'{base_name}_voxel_mask.npy'
+    np.save(voxel_mask_file, voxel_mask)
+    logger.info(f"Saved voxel mask to: {voxel_mask_file}")
+
+
+def filter_zero_variance_features(X_train, X_test, run_onsets_train, logger):
+    """
+    Filter features with zero variance in any training run.
+    
+    Parameters:
+    -----------
+    X_train : array of shape (n_samples_train, n_features)
+    X_test : array of shape (n_samples_test, n_features)
+    run_onsets_train : array of int
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    X_train_filtered : array
+    X_test_filtered : array
+    valid_features_mask : boolean array
+    """
+    logger.info("Identifying zero-variance features on training data (checking within each run)...")
+    run_splits_train_X = np.split(X_train, run_onsets_train[1:])
+    zero_var_in_any_run_X = np.zeros(X_train.shape[1], dtype=bool)
+    for i, run_data in enumerate(run_splits_train_X):
+        run_var = run_data.var(axis=0)
+        zero_var_this_run = (run_var < 1e-10)
+        zero_var_in_any_run_X |= zero_var_this_run
+        if zero_var_this_run.sum() > 0:
+            logger.info(f"  Run {i+1}: {zero_var_this_run.sum()} features with zero variance")
+    
+    valid_features_mask = ~zero_var_in_any_run_X
+    n_features_original = X_train.shape[1]
+    n_features_kept = valid_features_mask.sum()
+    n_features_dropped = n_features_original - n_features_kept
+    logger.info(f"  Original features: {n_features_original}")
+    logger.info(f"  Zero-variance in at least one run: {n_features_dropped}")
+    logger.info(f"  Kept features: {n_features_kept}")
+    
+    if n_features_dropped > 0:
+        logger.info("Applying feature mask to both train and test data...")
+        X_train = X_train[:, valid_features_mask]
+        X_test = X_test[:, valid_features_mask]
+        logger.info(f"  Train X shape: {X_train.shape}")
+        logger.info(f"  Test X shape: {X_test.shape}")
+    
+    return X_train, X_test, valid_features_mask
+
+
+def filter_zero_variance_voxels(Y_train, Y_test, run_onsets_train, logger):
+    """
+    Filter voxels with zero variance in any training run.
+    
+    Parameters:
+    -----------
+    Y_train : array of shape (n_samples_train, n_grayordinates)
+    Y_test : array of shape (n_samples_test, n_grayordinates)
+    run_onsets_train : array of int
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    Y_train_filtered : array
+    Y_test_filtered : array
+    valid_voxels_mask : boolean array
+    """
+    logger.info("Identifying zero-variance voxels on training data (checking within each run)...")
+    run_splits_train = np.split(Y_train, run_onsets_train[1:])
+    zero_var_in_any_run = np.zeros(Y_train.shape[1], dtype=bool)
+    for i, run_data in enumerate(run_splits_train):
+        run_var = run_data.var(axis=0)
+        zero_var_this_run = (run_var < 1e-10)
+        zero_var_in_any_run |= zero_var_this_run
+        if zero_var_this_run.sum() > 0:
+            logger.info(f"  Run {i+1}: {zero_var_this_run.sum()} voxels with zero variance")
+    
+    valid_voxels_mask = ~zero_var_in_any_run
+    n_voxels_original = Y_train.shape[1]
+    n_voxels_kept = valid_voxels_mask.sum()
+    n_voxels_dropped = n_voxels_original - n_voxels_kept
+    logger.info(f"  Original voxels: {n_voxels_original}")
+    logger.info(f"  Zero-variance in at least one run: {n_voxels_dropped} ({n_voxels_dropped/n_voxels_original*100:.2f}%)")
+    logger.info(f"  Kept voxels: {n_voxels_kept}")
+    
+    if n_voxels_dropped > 0:
+        logger.info("Applying voxel mask to both train and test data...")
+        Y_train = Y_train[:, valid_voxels_mask]
+        Y_test = Y_test[:, valid_voxels_mask]
+        logger.info(f"  Train Y shape: {Y_train.shape}")
+        logger.info(f"  Test Y shape: {Y_test.shape}")
+    
+    return Y_train, Y_test, valid_voxels_mask
 
 
 def main():
@@ -423,47 +512,16 @@ def main():
     logger.info("\n" + "="*80)
     logger.info("FEATURE FILTERING")
     logger.info("="*80)
-    logger.info("Identifying zero-variance features on training data...")
-    train_feature_var = X_train.var(axis=0)
-    valid_features_mask = train_feature_var > 1e-10
-    n_features_original = X_train.shape[1]
-    n_features_kept = valid_features_mask.sum()
-    n_features_dropped = n_features_original - n_features_kept
-    logger.info(f"  Original features: {n_features_original}")
-    logger.info(f"  Zero-variance features: {n_features_dropped}")
-    logger.info(f"  Kept features: {n_features_kept}")
-    if n_features_dropped > 0:
-        logger.info("Applying feature mask to both train and test data...")
-        X_train = X_train[:, valid_features_mask]
-        X_test = X_test[:, valid_features_mask]
-        logger.info(f"  Train X shape: {X_train.shape}")
-        logger.info(f"  Test X shape: {X_test.shape}")
+    X_train, X_test, valid_features_mask = filter_zero_variance_features(
+        X_train, X_test, run_onsets_train, logger
+    )
     
     logger.info("\n" + "="*80)
     logger.info("VOXEL FILTERING")
     logger.info("="*80)
-    logger.info("Identifying zero-variance voxels on training data (checking within each run)...")
-    run_splits_train = np.split(Y_train, run_onsets_train[1:])
-    zero_var_in_any_run = np.zeros(Y_train.shape[1], dtype=bool)
-    for i, run_data in enumerate(run_splits_train):
-        run_var = run_data.var(axis=0)
-        zero_var_this_run = (run_var < 1e-10)
-        zero_var_in_any_run |= zero_var_this_run
-        if zero_var_this_run.sum() > 0:
-            logger.info(f"  Run {i+1}: {zero_var_this_run.sum()} voxels with zero variance")
-    valid_voxels_mask = ~zero_var_in_any_run
-    n_voxels_original = Y_train.shape[1]
-    n_voxels_kept = valid_voxels_mask.sum()
-    n_voxels_dropped = n_voxels_original - n_voxels_kept
-    logger.info(f"  Original voxels: {n_voxels_original}")
-    logger.info(f"  Zero-variance in at least one run: {n_voxels_dropped} ({n_voxels_dropped/n_voxels_original*100:.2f}%)")
-    logger.info(f"  Kept voxels: {n_voxels_kept}")
-    if n_voxels_dropped > 0:
-        logger.info("Applying voxel mask to both train and test data...")
-        Y_train = Y_train[:, valid_voxels_mask]
-        Y_test = Y_test[:, valid_voxels_mask]
-        logger.info(f"  Train Y shape: {Y_train.shape}")
-        logger.info(f"  Test Y shape: {Y_test.shape}")
+    Y_train, Y_test, valid_voxels_mask = filter_zero_variance_voxels(
+        Y_train, Y_test, run_onsets_train, logger
+    )
     
     logger.info("\nPreprocessing training data...")
     X_train, Y_train = preprocess_data(X_train, Y_train, run_onsets_train, level_onsets_train, logger)
@@ -482,7 +540,7 @@ def main():
     logger.info("SAVING RESULTS")
     logger.info("="*80)
     save_results(args.subject, train_sessions, test_sessions, pipeline, cv_scores, test_scores, 
-                best_alphas, PATHS['models'], PATHS['cv_scores'], logger)
+                best_alphas, valid_voxels_mask, PATHS['models'], PATHS['cv_scores'], logger)
     
     logger.info("\n" + "="*80)
     logger.info("COMPLETE")
