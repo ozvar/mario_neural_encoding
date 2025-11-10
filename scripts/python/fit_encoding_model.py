@@ -315,7 +315,6 @@ def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, te
     train_str = f"{min(train_sessions):03d}-{max(train_sessions):03d}"
     test_str = f"{min(test_sessions):03d}-{max(test_sessions):03d}"
     base_name = f'sub-{subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
-    
     model_path = models_path / f'{base_name}_model.pkl'
     model_path.parent.mkdir(parents=True, exist_ok=True)
     # Remove CV generator before pickling (it's not needed for prediction)
@@ -342,6 +341,58 @@ def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, te
     voxel_mask_file = cv_scores_path / f'{base_name}_voxel_mask.npy'
     np.save(voxel_mask_file, voxel_mask)
     logger.info(f"Saved voxel mask to: {voxel_mask_file}")
+
+
+def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
+    """
+    Remove ITI/baseline periods where all behavioral features are zero.
+    
+    Parameters:
+    -----------
+    X : array of shape (n_samples, n_features)
+    Y : array of shape (n_samples, n_grayordinates)
+    run_onsets : array of int
+    logger : logging.Logger
+    threshold : float
+        Activity threshold for identifying non-baseline TRs
+        
+    Returns:
+    --------
+    X_active : array
+    Y_active : array
+    run_onsets_active : array
+    """
+    logger.info("Filtering baseline/ITI periods...")
+    # Split by runs
+    X_runs = np.split(X, run_onsets[1:])
+    Y_runs = np.split(Y, run_onsets[1:])
+    X_active_list = []
+    Y_active_list = []
+    run_onsets_active = [0]
+    cumulative = 0
+    total_dropped = 0
+    
+    for i, (X_run, Y_run) in enumerate(zip(X_runs, Y_runs)):
+        # Identify active TRs
+        activity = np.abs(X_run).sum(axis=1)
+        active_mask = activity > threshold
+        n_dropped = (~active_mask).sum()
+        total_dropped += n_dropped
+        if n_dropped > 0:
+            logger.info(f"  Run {i+1}: Kept {active_mask.sum()}/{len(active_mask)} TRs (dropped {n_dropped} ITI/baseline)")
+        # Keep only active TRs
+        X_active_list.append(X_run[active_mask])
+        Y_active_list.append(Y_run[active_mask])
+        cumulative += active_mask.sum()
+        run_onsets_active.append(cumulative)
+    X_active = np.vstack(X_active_list)
+    Y_active = np.vstack(Y_active_list)
+    run_onsets_active = np.array(run_onsets_active[:-1])  # Remove final cumulative
+    
+    logger.info(f"Total TRs dropped: {total_dropped} ({total_dropped/len(X)*100:.1f}%)")
+    logger.info(f"Active TRs kept: {len(X_active)} ({len(X_active)/len(X)*100:.1f}%)")
+    
+    return X_active, Y_active, run_onsets_active
 
 
 def filter_zero_variance_features(X_train, X_test, run_onsets_train, logger):
@@ -476,6 +527,17 @@ def main():
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
     
+    # Filter baseline periods before zero-variance features
+    logger.info("\n" + "="*80)
+    logger.info("BASELINE FILTERING")
+    logger.info("="*80)
+    X_train, Y_train, run_onsets_train = filter_baseline_periods(
+        X_train, Y_train, run_onsets_train, logger
+    )
+    X_test, Y_test, run_onsets_test = filter_baseline_periods(
+        X_test, Y_test, run_onsets_test, logger
+    )
+
     logger.info("\n" + "="*80)
     logger.info("FEATURE FILTERING")
     logger.info("="*80)
