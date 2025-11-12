@@ -10,6 +10,7 @@ import json
 import logging
 import pickle
 from pathlib import Path
+
 import numpy as np
 import nibabel as nib
 import pandas as pd
@@ -29,6 +30,7 @@ def setup_logging(subject, session_range, log_dir):
     """Configure logging to both file and console."""
     log_file = log_dir / f'sub-{subject:02d}_ses-{session_range[0]:03d}-{session_range[1]:03d}_fit.log'
     log_file.parent.mkdir(parents=True, exist_ok=True)
+    
     logging.basicConfig(
         level=logging.INFO,
         format='%(asctime)s - %(levelname)s - %(message)s',
@@ -37,6 +39,7 @@ def setup_logging(subject, session_range, log_dir):
             logging.StreamHandler()
         ]
     )
+
     return logging.getLogger(__name__)
 
 
@@ -57,14 +60,16 @@ def load_practice_metadata(subject, session, practice_metadata_path):
     metadata_path = practice_metadata_path / f'sub-{subject:02d}_ses-{session:03d}_practice_metadata.json'
     if not metadata_path.exists():
         raise FileNotFoundError(f"Practice metadata not found: {metadata_path}")
+    
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
+    
     return metadata
 
 
-def load_practice_features(subject, session, practice_runs, downsampled_path):
+def load_practice_features_with_names(subject, session, practice_runs, downsampled_path):
     """
-    Load behavioral features for practice runs and concatenate.
+    Load behavioral features for practice runs and return both data and column names.
     
     Parameters:
     -----------
@@ -76,18 +81,28 @@ def load_practice_features(subject, session, practice_runs, downsampled_path):
     Returns:
     --------
     X : array of shape (n_samples, n_features)
+    feature_names : list of str
     """
     X_list = []
+    feature_names = None
+    
     for run in practice_runs:
         filepath = (downsampled_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 
                    f'sub-{subject:02d}_ses-{session:03d}_run-{run:02d}_desc-downsampled.tsv')
         if not filepath.exists():
             raise FileNotFoundError(f"Downsampled features not found: {filepath}")
+        
         df = pd.read_csv(filepath, sep='\t')
         feature_cols = [col for col in df.columns if col not in ['TR_index', 'TR_time', 'level', 'score', 'time', 'coins']]
+        
+        if feature_names is None:
+            feature_names = feature_cols
+        
         X_list.append(df[feature_cols].values)
+    
     X = np.vstack(X_list).astype('float32')
-    return X
+    
+    return X, feature_names
 
 
 def load_practice_fmri(subject, session, practice_runs, fmriprep_path):
@@ -106,15 +121,19 @@ def load_practice_fmri(subject, session, practice_runs, fmriprep_path):
     Y : array of shape (n_samples, n_grayordinates)
     """
     Y_list = []
+    
     for run in practice_runs:
         filepath = (fmriprep_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func' /
                    f'sub-{subject:02d}_ses-{session:03d}_task-mario_run-{run}_space-fsLR_den-91k_bold.dtseries.nii')
         if not filepath.exists():
             raise FileNotFoundError(f"CIFTI file not found: {filepath}")
+        
         cifti = nib.load(str(filepath))
         fmri_data = cifti.get_fdata()
         Y_list.append(fmri_data)
+    
     Y = np.vstack(Y_list).astype('float32')
+    
     return Y
 
 
@@ -131,11 +150,13 @@ def validate_session_files(subject, session, metadata, downsampled_path, fmripre
     fmriprep_path : Path
     """
     practice_runs = metadata['practice_runs']
+    # Check behavioral feature files
     for run in practice_runs:
         filepath = (downsampled_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 
                    f'sub-{subject:02d}_ses-{session:03d}_run-{run:02d}_desc-downsampled.tsv')
         if not filepath.exists():
             raise FileNotFoundError(f"Missing behavioral features: {filepath}")
+    # Check fMRI CIFTI files
     for run in practice_runs:
         filepath = (fmriprep_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func' /
                    f'sub-{subject:02d}_ses-{session:03d}_task-mario_run-{run}_space-fsLR_den-91k_bold.dtseries.nii')
@@ -143,9 +164,9 @@ def validate_session_files(subject, session, metadata, downsampled_path, fmripre
             raise FileNotFoundError(f"Missing CIFTI file: {filepath}")
 
 
-def load_session_data(subject, session, practice_metadata_path, downsampled_path, fmriprep_path, logger):
+def load_session_data_with_names(subject, session, practice_metadata_path, downsampled_path, fmriprep_path, logger):
     """
-    Load all practice phase data for one session.
+    Load all practice phase data for one session, returning feature names.
     
     Parameters:
     -----------
@@ -161,28 +182,36 @@ def load_session_data(subject, session, practice_metadata_path, downsampled_path
     X : array of shape (n_samples, n_features)
     Y : array of shape (n_samples, n_grayordinates)
     metadata : dict
+    feature_names : list of str
     """
     logger.info(f"Loading data for sub-{subject:02d} ses-{session:03d}")
+    
     metadata = load_practice_metadata(subject, session, practice_metadata_path)
     logger.info(f"  Found {metadata['n_runs']} practice runs: {metadata['practice_runs']}")
     logger.info(f"  Total samples: {metadata['n_samples']}")
     logger.info(f"  Total levels: {metadata['n_levels']}")
+    
     validate_session_files(subject, session, metadata, downsampled_path, fmriprep_path)
     logger.info("  All required files validated")
-    X = load_practice_features(subject, session, metadata['practice_runs'], downsampled_path)
+    
+    X, feature_names = load_practice_features_with_names(subject, session, metadata['practice_runs'], downsampled_path)
     logger.info(f"  Loaded features: {X.shape}")
+    logger.info(f"  Feature names: {len(feature_names)}")
+    
     Y = load_practice_fmri(subject, session, metadata['practice_runs'], fmriprep_path)
     logger.info(f"  Loaded fMRI: {Y.shape}")
+    # Validate shapes
     if X.shape[0] != metadata['n_samples']:
         raise ValueError(f"Feature samples ({X.shape[0]}) != metadata n_samples ({metadata['n_samples']})")
     if Y.shape[0] != metadata['n_samples']:
         raise ValueError(f"fMRI samples ({Y.shape[0]}) != metadata n_samples ({metadata['n_samples']})")
-    return X, Y, metadata
+    
+    return X, Y, metadata, feature_names
 
 
-def concatenate_sessions(subject, sessions, practice_metadata_path, downsampled_path, fmriprep_path, logger):
+def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, downsampled_path, fmriprep_path, logger):
     """
-    Load and concatenate data from multiple sessions.
+    Load and concatenate data from multiple sessions, preserving feature names.
     
     Parameters:
     -----------
@@ -199,33 +228,44 @@ def concatenate_sessions(subject, sessions, practice_metadata_path, downsampled_
     Y : array of shape (n_samples_total, n_grayordinates)
     run_onsets : array of int
     level_onsets : array of int
+    feature_names : list of str (from first session)
     """
     X_list = []
     Y_list = []
     run_onsets_list = [0]
     level_onsets_list = [0]
     cumulative_samples = 0
+    feature_names = None
     
     for session in sessions:
-        X_sess, Y_sess, metadata = load_session_data(subject, session, practice_metadata_path, 
-                                                      downsampled_path, fmriprep_path, logger)
+        X_sess, Y_sess, metadata, feat_names = load_session_data_with_names(
+            subject, session, practice_metadata_path, downsampled_path, fmriprep_path, logger
+        )
+        
+        if feature_names is None:
+            feature_names = feat_names
+        
         X_list.append(X_sess)
         Y_list.append(Y_sess)
+        # Track run and level onsets
         run_onsets_sess = np.array(metadata['run_onsets']) + cumulative_samples
         level_onsets_sess = np.array(metadata['level_onsets']) + cumulative_samples
         run_onsets_list.extend(run_onsets_sess[1:].tolist())
         level_onsets_list.extend(level_onsets_sess[1:].tolist())
+        
         cumulative_samples += metadata['n_samples']
     
     X = np.vstack(X_list)
     Y = np.vstack(Y_list)
     run_onsets = np.array(run_onsets_list)
     level_onsets = np.array(level_onsets_list)
+    
     logger.info(f"Concatenated {len(sessions)} sessions:")
     logger.info(f"  Total samples: {X.shape[0]}")
     logger.info(f"  Total runs: {len(run_onsets)}")
     logger.info(f"  Total levels: {len(level_onsets)}")
-    return X, Y, run_onsets, level_onsets
+    
+    return X, Y, run_onsets, level_onsets, feature_names
 
 
 def preprocess_data(X, Y, run_onsets, level_onsets, logger):
@@ -246,26 +286,48 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     Y_preprocessed : array of shape (n_samples, n_grayordinates_valid)
     """
     logger.info("Preprocessing data...")
-    # logger.info("  Z-scoring features within runs")   # omit z-scoring of X's, same as Gallant
-    # X = zscore_runs(X, run_onsets)
+    
     logger.info("  Z-scoring fMRI within runs")
     Y = zscore_runs(Y, run_onsets)
+    # Handle NaNs and center
     X = np.nan_to_num(X)
     Y = np.nan_to_num(Y)
+    
     logger.info(f"  Final X shape: {X.shape}, dtype: {X.dtype}")
     logger.info(f"  Final Y shape: {Y.shape}, dtype: {Y.dtype}")
+    
     return X, Y
 
 
 def fit_and_evaluate(X_train, Y_train, X_test, Y_test, run_onsets_train, params, backend, logger):
+    """
+    Fit ridge regression model with FIR delays and evaluate on train/test sets.
+    
+    Parameters:
+    -----------
+    X_train : array of shape (n_samples_train, n_features)
+    Y_train : array of shape (n_samples_train, n_voxels)
+    X_test : array of shape (n_samples_test, n_features)
+    Y_test : array of shape (n_samples_test, n_voxels)
+    run_onsets_train : array of int
+    params : dict with keys 'alpha_min', 'alpha_max', 'n_alphas', 'delays', 'solver_params'
+    backend : himalaya backend
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    pipeline : fitted sklearn Pipeline
+    cv_scores : array of CV R² scores
+    test_scores : array of test R² scores
+    best_alphas : array of selected alpha values per voxel
+    """
     alphas = np.logspace(params['alpha_min'], params['alpha_max'], params['n_alphas'])
     logger.info(f"Testing {len(alphas)} alpha values from 10^{params['alpha_min']} to 10^{params['alpha_max']}")
-    
     # Create CV object and make it reusable
     cv = generate_leave_one_run_out(X_train.shape[0], run_onsets_train)
     cv = check_cv(cv)  # Convert generator to reusable object
     logger.info(f"Using leave-one-run-out CV with {cv.get_n_splits()} folds")
-    
+    # Build pipeline: StandardScaler -> Delayer -> KernelRidgeCV
     pipeline = make_pipeline(
         StandardScaler(with_mean=True, with_std=False),
         Delayer(delays=params['delays']),
@@ -275,13 +337,13 @@ def fit_and_evaluate(X_train, Y_train, X_test, Y_test, run_onsets_train, params,
     logger.info("Fitting model...")
     pipeline.fit(X_train, Y_train)
     logger.info("  Model fitting complete")
-    
+    # Evaluate on training data (CV scores)
     cv_scores = backend.to_numpy(pipeline.score(X_train, Y_train))
     best_alphas = backend.to_numpy(pipeline[-1].best_alphas_)
     logger.info(f"  Mean CV R² score: {cv_scores.mean():.4f} (std: {cv_scores.std():.4f})")
     logger.info(f"  Median CV R² score: {np.median(cv_scores):.4f}")
     logger.info(f"  Max CV R² score: {cv_scores.max():.4f}")
-    
+    # Evaluate on test data
     logger.info("Evaluating on test set...")
     test_scores = backend.to_numpy(pipeline.score(X_test, Y_test))
     logger.info(f"  Mean test R² score: {test_scores.mean():.4f} (std: {test_scores.std():.4f})")
@@ -292,9 +354,9 @@ def fit_and_evaluate(X_train, Y_train, X_test, Y_test, run_onsets_train, params,
 
 
 def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, test_scores, 
-                best_alphas, voxel_mask, models_path, cv_scores_path, logger):
+                best_alphas, voxel_mask, feature_names, feature_mask, models_path, cv_scores_path, logger):
     """
-    Save fitted model and evaluation results.
+    Save fitted model and evaluation results, including feature metadata.
     
     Parameters:
     -----------
@@ -306,6 +368,8 @@ def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, te
     test_scores : array
     best_alphas : array
     voxel_mask : boolean array
+    feature_names : list of str (original feature names before filtering)
+    feature_mask : boolean array (which features survived zero-variance filtering)
     models_path : Path
     cv_scores_path : Path
     logger : logging.Logger
@@ -313,32 +377,48 @@ def save_results(subject, train_sessions, test_sessions, pipeline, cv_scores, te
     train_str = f"{min(train_sessions):03d}-{max(train_sessions):03d}"
     test_str = f"{min(test_sessions):03d}-{max(test_sessions):03d}"
     base_name = f'sub-{subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
+    # Save model
     model_path = models_path / f'{base_name}_model.pkl'
     model_path.parent.mkdir(parents=True, exist_ok=True)
     # Remove CV generator before pickling (it's not needed for prediction)
     pipeline_copy = pipeline
     if hasattr(pipeline[-1], 'cv'):
         pipeline[-1].cv = None
+    
     with open(model_path, 'wb') as f:
         pickle.dump(pipeline_copy, f)
     logger.info(f"Saved model to: {model_path}")
-    
+    # Save CV scores
     cv_scores_file = cv_scores_path / f'{base_name}_cv_scores.npy'
     cv_scores_file.parent.mkdir(parents=True, exist_ok=True)
     np.save(cv_scores_file, cv_scores)
     logger.info(f"Saved CV scores to: {cv_scores_file}")
-    
+    # Save test scores
     test_scores_file = cv_scores_path / f'{base_name}_test_scores.npy'
     np.save(test_scores_file, test_scores)
     logger.info(f"Saved test scores to: {test_scores_file}")
-    
+    # Save best alphas
     alphas_file = cv_scores_path / f'{base_name}_best_alphas.npy'
     np.save(alphas_file, best_alphas)
     logger.info(f"Saved best alphas to: {alphas_file}")
-    
+    # Save voxel mask
     voxel_mask_file = cv_scores_path / f'{base_name}_voxel_mask.npy'
     np.save(voxel_mask_file, voxel_mask)
     logger.info(f"Saved voxel mask to: {voxel_mask_file}")
+    
+    feature_names_file = cv_scores_path / f'{base_name}_feature_names.json'
+    with open(feature_names_file, 'w') as f:
+        json.dump({
+            'original_features': feature_names,
+            'n_original': int(len(feature_names)),
+            'n_kept': int(feature_mask.sum()),
+            'kept_features': [name for name, keep in zip(feature_names, feature_mask) if keep]
+        }, f, indent=2)
+    logger.info(f"Saved feature names to: {feature_names_file}")
+    
+    feature_mask_file = cv_scores_path / f'{base_name}_feature_mask.npy'
+    np.save(feature_mask_file, feature_mask)
+    logger.info(f"Saved feature mask to: {feature_mask_file}")
 
 
 def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
@@ -364,6 +444,7 @@ def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
     # Split by runs
     X_runs = np.split(X, run_onsets[1:])
     Y_runs = np.split(Y, run_onsets[1:])
+    
     X_active_list = []
     Y_active_list = []
     run_onsets_active = [0]
@@ -371,18 +452,22 @@ def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
     total_dropped = 0
     
     for i, (X_run, Y_run) in enumerate(zip(X_runs, Y_runs)):
-        # Identify active TRs
+        # Identify active TRs (where features are nonzero)
         activity = np.abs(X_run).sum(axis=1)
         active_mask = activity > threshold
+        
         n_dropped = (~active_mask).sum()
         total_dropped += n_dropped
+        
         if n_dropped > 0:
             logger.info(f"  Run {i+1}: Kept {active_mask.sum()}/{len(active_mask)} TRs (dropped {n_dropped} ITI/baseline)")
         # Keep only active TRs
         X_active_list.append(X_run[active_mask])
         Y_active_list.append(Y_run[active_mask])
+        
         cumulative += active_mask.sum()
         run_onsets_active.append(cumulative)
+    
     X_active = np.vstack(X_active_list)
     Y_active = np.vstack(Y_active_list)
     run_onsets_active = np.array(run_onsets_active[:-1])  # Remove final cumulative
@@ -411,6 +496,7 @@ def filter_zero_variance_features(X_train, X_test, run_onsets_train, logger):
     valid_features_mask : boolean array
     """
     logger.info("Identifying zero-variance features on training data...")
+    
     train_feature_var = X_train.var(axis=0)
     valid_features_mask = train_feature_var > 1e-10
     
@@ -450,12 +536,15 @@ def filter_zero_variance_voxels(Y_train, Y_test, run_onsets_train, logger):
     valid_voxels_mask : boolean array
     """
     logger.info("Identifying zero-variance voxels on training data (checking within each run)...")
+    
     run_splits_train = np.split(Y_train, run_onsets_train[1:])
     zero_var_in_any_run = np.zeros(Y_train.shape[1], dtype=bool)
+    
     for i, run_data in enumerate(run_splits_train):
         run_var = run_data.var(axis=0)
         zero_var_this_run = (run_var < 1e-10)
         zero_var_in_any_run |= zero_var_this_run
+        
         if zero_var_this_run.sum() > 0:
             logger.info(f"  Run {i+1}: {zero_var_this_run.sum()} voxels with zero variance")
     
@@ -463,6 +552,7 @@ def filter_zero_variance_voxels(Y_train, Y_test, run_onsets_train, logger):
     n_voxels_original = Y_train.shape[1]
     n_voxels_kept = valid_voxels_mask.sum()
     n_voxels_dropped = n_voxels_original - n_voxels_kept
+    
     logger.info(f"  Original voxels: {n_voxels_original}")
     logger.info(f"  Zero-variance in at least one run: {n_voxels_dropped} ({n_voxels_dropped/n_voxels_original*100:.2f}%)")
     logger.info(f"  Kept voxels: {n_voxels_kept}")
@@ -481,29 +571,35 @@ def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(description='Fit voxelwise encoding models on practice phase data')
     parser.add_argument('--subject', type=int, required=True, help='Subject number')
+    
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument('--session', type=int, help='Single session number')
     group.add_argument('--session-range', type=int, nargs=2, metavar=('START', 'END'),
                       help='Inclusive range of session numbers (e.g., 6 10)')
     group.add_argument('--sessions', type=int, nargs='+', help='Explicit list of session numbers')
+    
     parser.add_argument('--test-sessions', type=int, nargs='+', required=True,
                        help='Session(s) to use as held-out test set')
     parser.add_argument('--backend', default='torch_cuda', choices=['torch_cuda', 'numpy', 'cupy'],
                        help='Himalaya computational backend')
-    args = parser.parse_args()
     
+    args = parser.parse_args()
+    # Parse training sessions
     if args.session is not None:
         train_sessions = [args.session]
     elif args.session_range is not None:
         train_sessions = list(range(args.session_range[0], args.session_range[1] + 1))
     else:
         train_sessions = args.sessions
+    
     test_sessions = args.test_sessions
+    # Validate no overlap
     if set(train_sessions) & set(test_sessions):
         raise ValueError("Train and test sessions must not overlap!")
-    
+    # Setup logging
     session_range = (min(train_sessions), max(train_sessions))
     logger = setup_logging(args.subject, session_range, PATHS['fit_logs'])
+    
     logger.info("="*80)
     logger.info("VOXELWISE ENCODING MODEL FITTING")
     logger.info("="*80)
@@ -511,20 +607,21 @@ def main():
     logger.info(f"Training sessions: {train_sessions}")
     logger.info(f"Test sessions: {test_sessions}")
     logger.info(f"Backend: {args.backend}")
+    
     backend = set_backend(args.backend, on_error="warn")
     logger.info(f"Using backend: {backend}")
-    
+    # Load training data
     logger.info("\nLoading training data...")
-    X_train, Y_train, run_onsets_train, level_onsets_train = concatenate_sessions(
+    X_train, Y_train, run_onsets_train, level_onsets_train, feature_names = concatenate_sessions_with_names(
         args.subject, train_sessions, PATHS['practice_phase_metadata'], 
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
+    # Load test data
     logger.info("\nLoading test data...")
-    X_test, Y_test, run_onsets_test, level_onsets_test = concatenate_sessions(
+    X_test, Y_test, run_onsets_test, level_onsets_test, _ = concatenate_sessions_with_names(
         args.subject, test_sessions, PATHS['practice_phase_metadata'],
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
-    
     # Filter baseline periods before zero-variance features
     logger.info("\n" + "="*80)
     logger.info("BASELINE FILTERING")
@@ -535,26 +632,27 @@ def main():
     X_test, Y_test, run_onsets_test = filter_baseline_periods(
         X_test, Y_test, run_onsets_test, logger
     )
-
+    # Filter zero-variance features
     logger.info("\n" + "="*80)
     logger.info("FEATURE FILTERING")
     logger.info("="*80)
     X_train, X_test, valid_features_mask = filter_zero_variance_features(
         X_train, X_test, run_onsets_train, logger
     )
-    
+    # Filter zero-variance voxels
     logger.info("\n" + "="*80)
     logger.info("VOXEL FILTERING")
     logger.info("="*80)
     Y_train, Y_test, valid_voxels_mask = filter_zero_variance_voxels(
         Y_train, Y_test, run_onsets_train, logger
     )
-    
+    # Preprocess data
     logger.info("\nPreprocessing training data...")
     X_train, Y_train = preprocess_data(X_train, Y_train, run_onsets_train, level_onsets_train, logger)
+    
     logger.info("\nPreprocessing test data...")
     X_test, Y_test = preprocess_data(X_test, Y_test, run_onsets_test, level_onsets_test, logger)
-    
+    # Fit model and evaluate
     logger.info("\n" + "="*80)
     logger.info("MODEL FITTING AND EVALUATION")
     logger.info("="*80)
@@ -562,12 +660,13 @@ def main():
         X_train, Y_train, X_test, Y_test, run_onsets_train,
         PARAMETERS['encoding_model'], backend, logger
     )
-    
+    # Save results
     logger.info("\n" + "="*80)
     logger.info("SAVING RESULTS")
     logger.info("="*80)
     save_results(args.subject, train_sessions, test_sessions, pipeline, cv_scores, test_scores, 
-                best_alphas, valid_voxels_mask, PATHS['models'], PATHS['cv_scores'], logger)
+                best_alphas, valid_voxels_mask, feature_names, valid_features_mask, 
+                PATHS['models'], PATHS['cv_scores'], logger)
     
     logger.info("\n" + "="*80)
     logger.info("COMPLETE")
