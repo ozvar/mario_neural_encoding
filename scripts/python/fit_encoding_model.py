@@ -246,14 +246,12 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     Y_preprocessed : array of shape (n_samples, n_grayordinates_valid)
     """
     logger.info("Preprocessing data...")
-    logger.info("  Z-scoring features within runs")
-    X = zscore_runs(X, run_onsets)
+    # logger.info("  Z-scoring features within runs")   # omit z-scoring of X's, same as Gallant
+    # X = zscore_runs(X, run_onsets)
     logger.info("  Z-scoring fMRI within runs")
     Y = zscore_runs(Y, run_onsets)
     X = np.nan_to_num(X)
     Y = np.nan_to_num(Y)
-    X -= X.mean(axis=0)
-    Y -= Y.mean(axis=0)
     logger.info(f"  Final X shape: {X.shape}, dtype: {X.dtype}")
     logger.info(f"  Final Y shape: {Y.shape}, dtype: {Y.dtype}")
     return X, Y
