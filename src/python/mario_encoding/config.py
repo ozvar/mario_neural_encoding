@@ -3,19 +3,24 @@ from pathlib import Path
 PROJECT_DIR = Path(__file__).parent.parent.parent.parent.resolve()
 
 PATHS = {
+    # Raw data directories
     'raw_data': PROJECT_DIR / '..' / 'mario.replays' / 'sourcedata' / 'mario',
     'replay_variables_jsons': PROJECT_DIR / '..' / 'mario.replays' / 'outputdata' / 'replays',
     'scene_clip_jsons': PROJECT_DIR / '..' / 'mario.scenes' / 'outputdata' / 'scene_clips',
     'bids_annotated_tsvs': PROJECT_DIR / '..' / 'mario.annotations' / 'outputdata' / 'annotated_events',
+    # Preprocessed data directories
     'per_session_combined_repvars_tsvs': PROJECT_DIR / 'inputs' / 'per_session_combined_repvars_tsvs',
     'per_run_combined_repvars_and_bids_events': PROJECT_DIR / 'inputs' / 'per_run_combined_repvars_and_bids_events',
     'per_run_pruned_features': PROJECT_DIR / 'inputs' / 'per_run_pruned_features',
     'per_run_downsampled_to_TR': PROJECT_DIR / 'inputs' / 'per_run_downsampled_to_TR',
     'practice_phase_metadata': PROJECT_DIR / 'inputs' / 'practice_phase_metadata',
     'fmriprep_data': PROJECT_DIR / '..' / 'mario.fmriprep',
+    # Results directories
     'models': PROJECT_DIR / 'results' / 'models',
+    'pca': PROJECT_DIR / 'results' / 'pca',
     'cv_scores': PROJECT_DIR / 'results' / 'cv_scores',
     'figures': PROJECT_DIR / 'results' / 'figures',
+    # Logs directories
     'logs': PROJECT_DIR / 'results' / 'logs',
     'fit_logs': PROJECT_DIR / 'results' / 'logs',
     'src_python': PROJECT_DIR / 'src' / 'python',
@@ -52,4 +57,5 @@ PARAMETERS = {
 PATHS['figures'].mkdir(parents=True, exist_ok=True)
 PATHS['logs'].mkdir(parents=True, exist_ok=True)
 PATHS['models'].mkdir(parents=True, exist_ok=True)
+PATHS['pca'].mkdir(parents=True, exist_ok=True)
 PATHS['cv_scores'].mkdir(parents=True, exist_ok=True)
