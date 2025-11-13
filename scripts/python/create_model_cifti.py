@@ -105,15 +105,15 @@ def load_results(subject, train_sessions, test_sessions,
     paths = get_result_paths(subject, train_sessions, test_sessions, 
                             models_path, cv_scores_path)
     
-    with open(paths['model'], 'rb') as f:
-        pipeline = pickle.load(f)
+    # with open(paths['model'], 'rb') as f:
+    #     pipeline = pickle.load(f)
     
     cv_scores = np.load(paths['cv_scores'])
     test_scores = np.load(paths['test_scores'])
     best_alphas = np.load(paths['best_alphas'])
     
     return {
-        'pipeline': pipeline,
+        # 'pipeline': pipeline,
         'cv_scores': cv_scores,
         'test_scores': test_scores,
         'best_alphas': best_alphas,
@@ -271,9 +271,18 @@ def create_all_cifti_maps(subject, train_sessions, test_sessions,
     results = load_results(subject, train_sessions, test_sessions)
     base_name = results['paths']['base_name']
     
+
+    # Load voxel mask directly instead of reconstructing
+    print("\nLoading voxel mask...")
+    voxel_mask_file = PATHS['cv_scores'] / f'{base_name}_voxel_mask.npy'
+    if not voxel_mask_file.exists():
+        raise FileNotFoundError(f"Voxel mask not found: {voxel_mask_file}")
+    voxel_mask = np.load(voxel_mask_file)
+    print(f"  Loaded mask: {voxel_mask.sum()} kept voxels")
+
     # Reconstruct voxel mask
-    print("\nReconstructing voxel mask...")
-    voxel_mask = reconstruct_voxel_mask(subject, train_sessions)
+    # print("\nReconstructing voxel mask...")
+    # voxel_mask = reconstruct_voxel_mask(subject, train_sessions)
     
     # Get template CIFTI
     template_session = train_sessions[0]
@@ -379,8 +388,8 @@ def print_model_summary(subject, train_sessions, test_sessions):
 
 if __name__ == '__main__':
     subject = 1
-    train_sessions = [7]
-    test_sessions = [14]
+    train_sessions = [7, 8, 9, 10, 12, 13, 14, 15, 16]
+    test_sessions = [17]
     
     # Print summary
     print_model_summary(subject, train_sessions, test_sessions)
