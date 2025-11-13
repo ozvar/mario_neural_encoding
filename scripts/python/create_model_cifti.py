@@ -4,6 +4,7 @@ Utilities for loading and visualizing encoding model results.
 This module provides functions to load fitted models, extract voxel masks,
 create CIFTI visualization files, and inspect model performance.
 """
+import argparse
 import numpy as np
 import nibabel as nib
 import pickle
@@ -196,12 +197,12 @@ def reconstruct_voxel_mask(subject, train_sessions,
 
 def create_cifti_from_scores(scores, voxel_mask, template_path, output_path):
     """
-    Create a CIFTI scalar file from model scores (e.g., R² values).
+    Create a CIFTI scalar file from model scores (e.g., R^2 values).
     
     Parameters:
     -----------
     scores : array of shape (n_kept_voxels,)
-        Values for each kept voxel (e.g., test R²)
+        Values for each kept voxel (e.g., test R^2)
     voxel_mask : boolean array of shape (91282,)
         Mask indicating which voxels were kept
     template_path : str or Path
@@ -247,8 +248,8 @@ def create_all_cifti_maps(subject, train_sessions, test_sessions,
     Create all CIFTI visualization maps for a fitted model.
     
     Creates:
-    - Test R² map
-    - CV R² map  
+    - Test R^2 map
+    - CV R^2 map  
     - Best alpha map
     
     Parameters:
@@ -358,16 +359,16 @@ def print_model_summary(subject, train_sessions, test_sessions):
     
     print(f"\nVoxels: {len(cv_scores)}")
     
-    print(f"\nCV R² distribution:")
+    print(f"\nCV R^2 distribution:")
     print(f"  Mean: {cv_scores.mean():.4f}")
     print(f"  Median: {np.median(cv_scores):.4f}")
     print(f"  Std: {cv_scores.std():.4f}")
     print(f"  Range: [{cv_scores.min():.4f}, {cv_scores.max():.4f}]")
     print(f"  Positive: {(cv_scores > 0).sum()}/{len(cv_scores)} ({(cv_scores > 0).mean()*100:.1f}%)")
-    print(f"  R² > 0.1: {(cv_scores > 0.1).sum()} ({(cv_scores > 0.1).mean()*100:.1f}%)")
-    print(f"  R² > 0.3: {(cv_scores > 0.3).sum()} ({(cv_scores > 0.3).mean()*100:.1f}%)")
+    print(f"  R^2 > 0.1: {(cv_scores > 0.1).sum()} ({(cv_scores > 0.1).mean()*100:.1f}%)")
+    print(f"  R^2 > 0.3: {(cv_scores > 0.3).sum()} ({(cv_scores > 0.3).mean()*100:.1f}%)")
     
-    print(f"\nTest R² distribution:")
+    print(f"\nTest R^2 distribution:")
     print(f"  Mean: {test_scores.mean():.4f}")
     print(f"  Median: {np.median(test_scores):.4f}")
     print(f"  Std: {test_scores.std():.4f}")
@@ -380,19 +381,40 @@ def print_model_summary(subject, train_sessions, test_sessions):
     print(f"  Median: {np.median(best_alphas):.2e}")
     print(f"  Range: [{best_alphas.min():.2e}, {best_alphas.max():.2e}]")
     
-    print(f"\nTop 10 voxels (by test R²):")
+    print(f"\nTop 10 voxels (by test R^2):")
     top_10_idx = np.argsort(test_scores)[-10:][::-1]
     for i, idx in enumerate(top_10_idx, 1):
         print(f"  {i}. Voxel {idx}: CV={cv_scores[idx]:.3f}, Test={test_scores[idx]:.3f}, alpha={best_alphas[idx]:.2e}")
 
-
 if __name__ == '__main__':
-    subject = 1
-    train_sessions = [7, 8, 9, 10, 12, 13, 14, 15, 16]
-    test_sessions = [17]
+    parser = argparse.ArgumentParser(description='Create CIFTI visualization maps from encoding model results')
+    parser.add_argument('--subject', type=int, required=True, help='Subject number')
+    
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--session', type=int, help='Single session number')
+    group.add_argument('--session-range', type=int, nargs=2, metavar=('START', 'END'),
+                      help='Inclusive range of session numbers (e.g., 6 10)')
+    group.add_argument('--sessions', type=int, nargs='+', help='Explicit list of session numbers')
+    
+    parser.add_argument('--test-sessions', type=int, nargs='+', required=True,
+                       help='Session(s) to use as held-out test set')
+    
+    args = parser.parse_args()
+    
+    # Parse training sessions
+    if args.session is not None:
+        train_sessions = [args.session]
+    elif args.session_range is not None:
+        train_sessions = list(range(args.session_range[0], args.session_range[1] + 1))
+    else:
+        train_sessions = args.sessions
+    
+    test_sessions = args.test_sessions
+    subject = args.subject
     
     # Print summary
     print_model_summary(subject, train_sessions, test_sessions)
+    
     # Create CIFTI maps
     print("\n")
     cifti_paths = create_all_cifti_maps(subject, train_sessions, test_sessions)
