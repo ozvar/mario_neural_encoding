@@ -1,7 +1,8 @@
 """
-Data loading and preprocessing utilities for Mario encoding models.
-
-Extracted from fit_encoding_model.py to enable reuse across different analysis scripts.
+Changes from original:
+1. load_practice_features_with_names() returns features in FILE order
+2. concatenate_sessions_with_names() preserves FILE order
+3. FEATURE_SPACES is only used for grouping, not ordering
 """
 import json
 import numpy as np
@@ -39,6 +40,9 @@ def load_practice_features_with_names(subject, session, practice_runs, downsampl
     """
     Load behavioral features for practice runs and return both data and column names.
     
+    IMPORTANT: Returns features in the order they appear in the TSV files.
+    This is the source of truth for feature ordering.
+    
     Parameters:
     -----------
     subject : int
@@ -50,6 +54,7 @@ def load_practice_features_with_names(subject, session, practice_runs, downsampl
     --------
     X : array of shape (n_samples, n_features)
     feature_names : list of str
+        Features in the order they appear in files
     """
     X_list = []
     feature_names = None
@@ -61,10 +66,17 @@ def load_practice_features_with_names(subject, session, practice_runs, downsampl
             raise FileNotFoundError(f"Downsampled features not found: {filepath}")
         
         df = pd.read_csv(filepath, sep='\t')
+        
+        # Exclude metadata columns, keep feature columns in FILE order
         feature_cols = [col for col in df.columns if col not in ['TR_index', 'TR_time', 'level', 'score', 'time', 'coins']]
         
+        # First run defines the canonical feature order
         if feature_names is None:
             feature_names = feature_cols
+        else:
+            # Verify all runs have same features in same order
+            if feature_cols != feature_names:
+                raise ValueError(f"Feature column mismatch in run {run}. Expected {feature_names}, got {feature_cols}")
         
         X_list.append(df[feature_cols].values)
     
@@ -118,12 +130,14 @@ def validate_session_files(subject, session, metadata, downsampled_path, fmripre
     fmriprep_path : Path
     """
     practice_runs = metadata['practice_runs']
+    
     # Check behavioral feature files
     for run in practice_runs:
         filepath = (downsampled_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 
                    f'sub-{subject:02d}_ses-{session:03d}_run-{run:02d}_desc-downsampled.tsv')
         if not filepath.exists():
             raise FileNotFoundError(f"Missing behavioral features: {filepath}")
+    
     # Check fMRI CIFTI files
     for run in practice_runs:
         filepath = (fmriprep_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func' /
@@ -151,6 +165,7 @@ def load_session_data_with_names(subject, session, practice_metadata_path, downs
     Y : array of shape (n_samples, n_grayordinates)
     metadata : dict
     feature_names : list of str
+        Features in FILE order
     """
     logger.info(f"Loading data for sub-{subject:02d} ses-{session:03d}")
     
@@ -164,10 +179,11 @@ def load_session_data_with_names(subject, session, practice_metadata_path, downs
     
     X, feature_names = load_practice_features_with_names(subject, session, metadata['practice_runs'], downsampled_path)
     logger.info(f"  Loaded features: {X.shape}")
-    logger.info(f"  Feature names: {len(feature_names)}")
+    logger.info(f"  Feature names (in file order): {len(feature_names)}")
     
     Y = load_practice_fmri(subject, session, metadata['practice_runs'], fmriprep_path)
     logger.info(f"  Loaded fMRI: {Y.shape}")
+    
     # Validate shapes
     if X.shape[0] != metadata['n_samples']:
         raise ValueError(f"Feature samples ({X.shape[0]}) != metadata n_samples ({metadata['n_samples']})")
@@ -180,6 +196,9 @@ def load_session_data_with_names(subject, session, practice_metadata_path, downs
 def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, downsampled_path, fmriprep_path, logger):
     """
     Load and concatenate data from multiple sessions, preserving feature names.
+    
+    IMPORTANT: Feature order comes from the first session's files and is preserved.
+    All subsequent sessions are verified to have the same feature order.
     
     Parameters:
     -----------
@@ -196,7 +215,8 @@ def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, d
     Y : array of shape (n_samples_total, n_grayordinates)
     run_onsets : array of int
     level_onsets : array of int
-    feature_names : list of str (from first session)
+    feature_names : list of str
+        Features in FILE order from first session (source of truth)
     """
     X_list = []
     Y_list = []
@@ -210,11 +230,22 @@ def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, d
             subject, session, practice_metadata_path, downsampled_path, fmriprep_path, logger
         )
         
+        # First session defines canonical feature order
         if feature_names is None:
             feature_names = feat_names
+            logger.info(f"  Canonical feature order established from session {session}")
+        else:
+            # Verify feature consistency across sessions
+            if feat_names != feature_names:
+                raise ValueError(
+                    f"Feature mismatch in session {session}. "
+                    f"Expected {len(feature_names)} features in order: {feature_names[:5]}..., "
+                    f"but got {len(feat_names)} features: {feat_names[:5]}..."
+                )
         
         X_list.append(X_sess)
         Y_list.append(Y_sess)
+        
         # Track run and level onsets
         run_onsets_sess = np.array(metadata['run_onsets']) + cumulative_samples
         level_onsets_sess = np.array(metadata['level_onsets']) + cumulative_samples
@@ -257,7 +288,8 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     
     logger.info("  Z-scoring fMRI within runs")
     Y = zscore_runs(Y, run_onsets)
-    # Handle NaNs and center
+    
+    # Handle NaNs
     X = np.nan_to_num(X)
     Y = np.nan_to_num(Y)
     
@@ -287,6 +319,7 @@ def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
     run_onsets_active : array
     """
     logger.info("Filtering baseline/ITI periods...")
+    
     # Split by runs
     X_runs = np.split(X, run_onsets[1:])
     Y_runs = np.split(Y, run_onsets[1:])
@@ -307,6 +340,7 @@ def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
         
         if n_dropped > 0:
             logger.info(f"  Run {i+1}: Kept {active_mask.sum()}/{len(active_mask)} TRs (dropped {n_dropped} ITI/baseline)")
+        
         # Keep only active TRs
         X_active_list.append(X_run[active_mask])
         Y_active_list.append(Y_run[active_mask])
@@ -316,7 +350,7 @@ def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
     
     X_active = np.vstack(X_active_list)
     Y_active = np.vstack(Y_active_list)
-    run_onsets_active = np.array(run_onsets_active[:-1])  # Remove final cumulative
+    run_onsets_active = np.array(run_onsets_active[:-1])
     
     logger.info(f"Total TRs dropped: {total_dropped} ({total_dropped/len(X)*100:.1f}%)")
     logger.info(f"Active TRs kept: {len(X_active)} ({len(X_active)/len(X)*100:.1f}%)")
