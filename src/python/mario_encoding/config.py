@@ -1,4 +1,5 @@
 from pathlib import Path
+import numpy as np
 
 PROJECT_DIR = Path(__file__).parent.parent.parent.parent.resolve()
 
@@ -58,7 +59,8 @@ PARAMETERS = {
         'solver': 'random_search',
         'solver_params': {
             'n_iter': 100,  # Random search iterations
-            'n_targets_batch': 500  # GPU memory management
+            'n_targets_batch': 500,  # GPU memory management
+            'alphas': np.logspace(1, 20, 20)
         }
     }
 }
