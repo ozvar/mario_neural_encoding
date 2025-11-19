@@ -393,9 +393,9 @@ def main():
     parser.add_argument('--feature-space', type=str, required=True,
                        choices=['perception', 'motor', 'action', 'scene', 'activity'],
                        help='Which feature space to extract')
-    parser.add_argument('--threshold', type=float, default=0.01,
-                       help='Minimum R^2 threshold (default: 0.01)')
-    parser.add_argument('--threshold-type', type=str, default='unique',
+    parser.add_argument('--threshold', type=float, default=0,
+                       help='Minimum R^2 threshold (default: 0)')
+    parser.add_argument('--threshold-type', type=str, default='full',
                        choices=['unique', 'full', 'none'],
                        help='Threshold type: unique (R2_unique), full (R2_full), or none (all voxels)')
     parser.add_argument('--n-delays', type=int, default=4,
