@@ -9,7 +9,7 @@ Models are fit sequentially and saved immediately to manage memory:
 1. Full model (all feature spaces)
 2. Five restricted models (each excluding one feature space)
 
-Unique variance is computed as: R²_unique_X = R²_full - R²_without_X
+Unique variance is computed as: R2_unique_X = R2_full - R2_without_X
 """
 import argparse
 import json
@@ -87,7 +87,7 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     """
     Fit all models sequentially, saving each immediately to avoid memory issues.
     
-    Returns R² scores only, not models (models are saved to disk).
+    Returns R2 scores only, not models (models are saved to disk).
     
     Parameters:
     -----------
@@ -135,21 +135,21 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     if hasattr(results['R2_full'], 'cpu'):
         results['R2_full'] = results['R2_full'].cpu().numpy()
     
-    logger.info(f"  Mean test R²: {results['R2_full'].mean():.6f}")
-    logger.info(f"  Median test R²: {np.median(results['R2_full']):.6f}")
-    logger.info(f"  Max test R²: {results['R2_full'].max():.6f}")
+    logger.info(f"  Mean test R2: {results['R2_full'].mean():.6f}")
+    logger.info(f"  Median test R2: {np.median(results['R2_full']):.6f}")
+    logger.info(f"  Max test R2: {results['R2_full'].max():.6f}")
     
     # Save model immediately
     model_path = output_dir / 'model_full.pkl'
     logger.info(f"Saving full model to {model_path}...")
     with open(model_path, 'wb') as f:
         pickle.dump(model_full, f)
-    logger.info("  Saved ✓")
+    logger.info("  Saved [OK]“")
     
     # Delete to free memory
     del model_full
     gc.collect()
-    logger.info("  Freed memory ✓")
+    logger.info("  Freed memory [OK]“")
     
     # ========================================================================
     # FIT RESTRICTED MODELS (one per feature space)
@@ -183,28 +183,28 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         
         results['R2_restricted'][space_name] = R2_restricted
         
-        logger.info(f"  Mean test R² (without {space_name}): {R2_restricted.mean():.6f}")
-        logger.info(f"  Median test R²: {np.median(R2_restricted):.6f}")
+        logger.info(f"  Mean test R2 (without {space_name}): {R2_restricted.mean():.6f}")
+        logger.info(f"  Median test R2: {np.median(R2_restricted):.6f}")
         
         # Compute unique variance immediately
         R2_unique = results['R2_full'] - R2_restricted
         results['R2_unique'][space_name] = R2_unique
         
-        logger.info(f"  Mean unique R² for {space_name}: {R2_unique.mean():.6f}")
-        logger.info(f"  Median unique R²: {np.median(R2_unique):.6f}")
-        logger.info(f"  % voxels with positive unique R²: {(R2_unique > 0).sum() / len(R2_unique) * 100:.1f}%")
+        logger.info(f"  Mean unique R2 for {space_name}: {R2_unique.mean():.6f}")
+        logger.info(f"  Median unique R2: {np.median(R2_unique):.6f}")
+        logger.info(f"  % voxels with positive unique R2: {(R2_unique > 0).sum() / len(R2_unique) * 100:.1f}%")
         
         # Save model
         model_path = output_dir / f'model_no_{space_name}.pkl'
         logger.info(f"Saving restricted model to {model_path}...")
         with open(model_path, 'wb') as f:
             pickle.dump(model_restricted, f)
-        logger.info("  Saved ✓")
+        logger.info("  Saved [OK]“")
         
         # Clean up
         del model_restricted
         gc.collect()
-        logger.info("  Freed memory ✓")
+        logger.info("  Freed memory [OK]“")
     
     return results
 
@@ -213,7 +213,7 @@ def save_results(subject, train_sessions, test_sessions, results,
                 feature_spaces_filtered, space_to_indices, valid_voxels_mask,
                 feature_names, valid_features_mask, output_dir, logger):
     """
-    Save R² scores and metadata.
+    Save R2 scores and metadata.
     
     Parameters:
     -----------
@@ -234,27 +234,27 @@ def save_results(subject, train_sessions, test_sessions, results,
     logger.info("SAVING RESULTS")
     logger.info("="*80)
     
-    # Save R² scores in compressed format
+    # Save R2 scores in compressed format
     r2_file = output_dir / 'R2_scores.npz'
-    logger.info(f"Saving R² scores to {r2_file}...")
+    logger.info(f"Saving R2 scores to {r2_file}...")
     
     save_dict = {
         'R2_full': results['R2_full'],
     }
     
-    # Add restricted and unique R² for each space
+    # Add restricted and unique R2 for each space
     for space_name in results['R2_restricted'].keys():
         save_dict[f'R2_no_{space_name}'] = results['R2_restricted'][space_name]
         save_dict[f'R2_unique_{space_name}'] = results['R2_unique'][space_name]
     
     np.savez_compressed(r2_file, **save_dict)
-    logger.info("  Saved ✓")
+    logger.info("  Saved [OK]“")
     
     # Save voxel mask
     voxel_mask_file = output_dir / 'valid_voxels_mask.npy'
     logger.info(f"Saving voxel mask to {voxel_mask_file}...")
     np.save(voxel_mask_file, valid_voxels_mask)
-    logger.info("  Saved ✓")
+    logger.info("  Saved [OK]“")
     
     # Save metadata
     metadata_file = output_dir / 'metadata.json'
@@ -280,14 +280,14 @@ def save_results(subject, train_sessions, test_sessions, results,
     
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)
-    logger.info("  Saved ✓")
+    logger.info("  Saved [OK]“")
     
     # Print summary
     logger.info("")
     logger.info("RESULTS SUMMARY:")
     logger.info(f"  Output directory: {output_dir}")
     logger.info(f"  Models saved: model_full.pkl + 5 restricted models")
-    logger.info(f"  R² scores: R2_scores.npz")
+    logger.info(f"  R2 scores: R2_scores.npz")
     logger.info(f"  Metadata: metadata.json")
     logger.info(f"  Voxel mask: valid_voxels_mask.npy")
 
@@ -309,6 +309,8 @@ def main():
                        help='Session(s) to use as held-out test set')
     parser.add_argument('--backend', default='torch_cuda', choices=['torch_cuda', 'numpy', 'cupy'],
                        help='Himalaya computational backend')
+    parser.add_argument('--skip-baseline-filtering', action='store_true',
+                       help='Skip baseline/ITI filtering (use all TRs)')
     
     args = parser.parse_args()
     
@@ -373,17 +375,24 @@ def main():
     # ========================================================================
     # FILTER BASELINE PERIODS
     # ========================================================================
-    logger.info("")
-    logger.info("="*80)
-    logger.info("BASELINE FILTERING")
-    logger.info("="*80)
+    if not args.skip_baseline_filtering:
+        logger.info("")
+        logger.info("="*80)
+        logger.info("BASELINE FILTERING")
+        logger.info("="*80)
+        
+        X_train, Y_train, run_onsets_train = filter_baseline_periods(
+            X_train, Y_train, run_onsets_train, logger
+        )
+        X_test, Y_test, run_onsets_test = filter_baseline_periods(
+            X_test, Y_test, run_onsets_test, logger
+        )
+    else:
+        logger.info("")
+        logger.info("="*80)
+        logger.info("SKIPPING BASELINE FILTERING (using all TRs)")
+        logger.info("="*80)
     
-    X_train, Y_train, run_onsets_train = filter_baseline_periods(
-        X_train, Y_train, run_onsets_train, logger
-    )
-    X_test, Y_test, run_onsets_test = filter_baseline_periods(
-        X_test, Y_test, run_onsets_test, logger
-    )
     
     # ========================================================================
     # FILTER ZERO-VARIANCE FEATURES AND VOXELS
