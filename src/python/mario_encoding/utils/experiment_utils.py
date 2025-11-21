@@ -9,9 +9,8 @@ def generate_experiment_id() -> str:
     return datetime.now().strftime('%Y%m%d_%H%M%S')
 
 
-def create_experiment_config(feature_spaces: dict, delays: list, n_alphas: int,
-                            alpha_min: float, alpha_max: float, 
-                            baseline_filtering: bool) -> tuple:
+def create_experiment_config(feature_spaces: dict, delays: list, solver: str,
+                            n_iter: int, alphas: list, baseline_filtering: bool) -> tuple:
     """
     Create experiment configuration dictionary.
     
@@ -21,9 +20,12 @@ def create_experiment_config(feature_spaces: dict, delays: list, n_alphas: int,
         Dictionary mapping feature space names to lists of feature names
     delays : list
         FIR delays in TRs
-    n_alphas : int
-    alpha_min : float
-    alpha_max : float
+    solver : str
+        Solver type (e.g., 'random_search')
+    n_iter : int
+        Number of random search iterations
+    alphas : list or array
+        Alpha values to test
     baseline_filtering : bool
         
     Returns:
@@ -36,11 +38,13 @@ def create_experiment_config(feature_spaces: dict, delays: list, n_alphas: int,
         'experiment_id': experiment_id,
         'timestamp': datetime.now().isoformat(),
         'feature_spaces': feature_spaces,
-        'encoding_model': {
+        'variance_partitioning': {
             'delays': delays,
-            'n_alphas': n_alphas,
-            'alpha_min': alpha_min,
-            'alpha_max': alpha_max
+            'solver': solver,
+            'solver_params': {
+                'n_iter': n_iter,
+                'alphas': alphas.tolist() if hasattr(alphas, 'tolist') else list(alphas)
+            }
         },
         'preprocessing': {
             'baseline_filtering': baseline_filtering

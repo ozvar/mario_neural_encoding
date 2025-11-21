@@ -361,16 +361,17 @@ def main():
     config, experiment_id = create_experiment_config(
         feature_spaces=FEATURE_SPACES,
         delays=params['delays'],
-        n_alphas=params['n_alphas'],
-        alpha_min=params['alpha_min'],
-        alpha_max=params['alpha_max'],
+        solver=params['solver'],
+        n_iter=params['solver_params']['n_iter'],
+        alphas=params['solver_params']['alphas'],
         baseline_filtering=not args.skip_baseline_filtering
     )
     logger.info(f"Experiment ID: {experiment_id}")
     logger.info(f"Timestamp: {config['timestamp']}")
-    logger.info(f"Delays: {config['encoding_model']['delays']}")
-    logger.info(f"Alpha range: 10^{config['encoding_model']['alpha_min']} to 10^{config['encoding_model']['alpha_max']}")
-    logger.info(f"N alphas: {config['encoding_model']['n_alphas']}")
+    logger.info(f"Delays: {config['variance_partitioning']['delays']}")
+    logger.info(f"Solver: {config['variance_partitioning']['solver']}")
+    logger.info(f"N iterations: {config['variance_partitioning']['solver_params']['n_iter']}")
+    logger.info(f"N alphas: {len(config['variance_partitioning']['solver_params']['alphas'])}")
     logger.info(f"Baseline filtering: {config['preprocessing']['baseline_filtering']}")
     
     # Create output directory with experiment ID
