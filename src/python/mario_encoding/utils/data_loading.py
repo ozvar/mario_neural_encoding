@@ -358,6 +358,103 @@ def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
     return X_active, Y_active, run_onsets_active
 
 
+def select_and_validate_features(X, feature_names, feature_spaces_dict, logger):
+    """
+    Select features specified in config and validate they exist in loaded data.
+    
+    This is the authoritative feature selection step that happens BEFORE any
+    filtering or modeling. Only features listed in FEATURE_SPACES will be kept.
+    
+    Parameters:
+    -----------
+    X : array of shape (n_samples, n_features_loaded)
+        All features loaded from data files
+    feature_names : list of str
+        Names of all loaded features (in file order)
+    feature_spaces_dict : dict
+        From config.py - defines which features to use and their grouping
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    X_selected : array of shape (n_samples, n_features_selected)
+        Only features specified in config
+    feature_names_selected : list of str
+        Names of selected features (in original file order)
+    selection_mask : boolean array
+        Mask indicating which loaded features were selected
+        
+    Raises:
+    -------
+    ValueError if any requested feature doesn't exist in loaded data
+    """
+    logger.info("")
+    logger.info("="*80)
+    logger.info("FEATURE SELECTION FROM CONFIG")
+    logger.info("="*80)
+    
+    # Flatten all features requested in config
+    requested_features = []
+    for space_name in sorted(feature_spaces_dict.keys()):
+        requested_features.extend(feature_spaces_dict[space_name])
+    
+    logger.info(f"Loaded from data: {len(feature_names)} features")
+    logger.info(f"Requested in config: {len(requested_features)} features")
+    logger.info(f"Feature spaces defined: {sorted(feature_spaces_dict.keys())}")
+    
+    # Check for duplicates in config
+    if len(requested_features) != len(set(requested_features)):
+        duplicates = [f for f in requested_features if requested_features.count(f) > 1]
+        raise ValueError(f"Duplicate features in config: {set(duplicates)}")
+    
+    # Check for missing features
+    missing_features = set(requested_features) - set(feature_names)
+    if missing_features:
+        logger.error(f"Features in config but NOT in data files: {sorted(missing_features)}")
+        raise ValueError(
+            f"Config requests {len(missing_features)} features not found in data. "
+            f"Missing features: {sorted(missing_features)}"
+        )
+    
+    # Check for extra features (informational only)
+    extra_features = set(feature_names) - set(requested_features)
+    if extra_features:
+        logger.warning(f"Features in data but NOT in config (will be DROPPED): {len(extra_features)}")
+        if len(extra_features) <= 10:
+            logger.warning(f"  Dropped features: {sorted(extra_features)}")
+        else:
+            logger.warning(f"  Dropped features (first 10): {sorted(extra_features)[:10]}")
+    
+    # Create selection mask (preserves file order)
+    selection_mask = np.array([feat in requested_features for feat in feature_names])
+    
+    # Select features
+    X_selected = X[:, selection_mask]
+    feature_names_selected = [feat for feat in feature_names if feat in requested_features]
+    
+    logger.info("")
+    logger.info("Selection summary:")
+    logger.info(f"  Loaded: {len(feature_names)}")
+    logger.info(f"  Requested: {len(requested_features)}")
+    logger.info(f"  Kept: {len(feature_names_selected)}")
+    logger.info(f"  Dropped: {len(extra_features)}")
+    
+    # Log per-space breakdown
+    logger.info("")
+    logger.info("Per-space selection:")
+    for space_name in sorted(feature_spaces_dict.keys()):
+        space_feats = feature_spaces_dict[space_name]
+        kept = [f for f in space_feats if f in feature_names_selected]
+        logger.info(f"  {space_name}: {len(kept)}/{len(space_feats)} features")
+        if len(kept) < len(space_feats):
+            missing = set(space_feats) - set(kept)
+            logger.warning(f"    Missing from data: {sorted(missing)}")
+    
+    logger.info("="*80)
+    
+    return X_selected, feature_names_selected, selection_mask
+
+
 def filter_zero_variance_features(X_train, X_test, run_onsets_train, logger):
     """
     Filter features with zero variance across the entire training set.
