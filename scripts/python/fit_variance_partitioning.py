@@ -404,11 +404,15 @@ def main():
     )
     
     logger.info("Loading test data...")
-    X_test, Y_test, run_onsets_test, level_onsets_test, _ = concatenate_sessions_with_names(
+    X_test, Y_test, run_onsets_test, level_onsets_test, feature_names_test_original = concatenate_sessions_with_names(
         args.subject, test_sessions, PATHS['practice_phase_metadata'],
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
     
+    # After loading both datasets, before selection
+    if feature_names != feature_names_test_original:
+        raise ValueError("Train and test data have different features before selection!")
+
     # ========================================================================
     # SELECT FEATURES ACCORDING TO CONFIG
     # ========================================================================
@@ -425,7 +429,7 @@ def main():
     logger.info("")
     logger.info("Selecting features for test data...")
     X_test, feature_names_test, selection_mask_test = select_and_validate_features(
-        X_test, feature_names, FEATURE_SPACES, logger
+        X_test, feature_names_test_original, FEATURE_SPACES, logger
     )
     
     # Verify selection masks match
