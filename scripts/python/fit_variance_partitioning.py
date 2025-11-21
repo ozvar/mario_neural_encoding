@@ -25,6 +25,7 @@ from voxelwise_tutorials.delayer import Delayer
 from himalaya.backend import set_backend
 
 from mario_encoding.config import PATHS, PARAMETERS, FEATURE_SPACES
+from mario_encoding.utils.experiment_utils import create_experiment_config, save_experiment_config
 from mario_encoding.utils.data_loading import (
     concatenate_sessions_with_names,
     filter_baseline_periods,
@@ -62,9 +63,18 @@ def setup_logging(subject, session_range, log_dir):
     return logging.getLogger(__name__)
 
 
-def get_output_directory(subject, train_sessions, test_sessions, base_path):
+def get_output_directory(subject, train_sessions, test_sessions, experiment_id, base_path):
     """
-    Create output directory for this subject/session combination.
+    Create output directory for this subject/session/experiment combination.
+    
+    Parameters:
+    -----------
+    subject : int
+    train_sessions : list of int
+    test_sessions : list of int
+    experiment_id : str
+        Timestamp-based experiment ID
+    base_path : Path
     
     Returns:
     --------
@@ -73,11 +83,9 @@ def get_output_directory(subject, train_sessions, test_sessions, base_path):
     """
     train_str = f"{min(train_sessions):03d}-{max(train_sessions):03d}"
     test_str = f"{min(test_sessions):03d}-{max(test_sessions):03d}"
-    dir_name = f'sub-{subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
-    
-    output_dir = base_path / dir_name
+    dataset_dir = f'sub-{subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
+    output_dir = base_path / dataset_dir / experiment_id
     output_dir.mkdir(parents=True, exist_ok=True)
-    
     return output_dir
 
 
@@ -115,7 +123,6 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         'R2_restricted': {},
         'R2_unique': {}
     }
-    
     # ========================================================================
     # FIT FULL MODEL
     # ========================================================================
@@ -144,12 +151,12 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     logger.info(f"Saving full model to {model_path}...")
     with open(model_path, 'wb') as f:
         pickle.dump(model_full, f)
-    logger.info("  Saved [OK]“")
+    logger.info("  Saved [OK]")
     
     # Delete to free memory
     del model_full
     gc.collect()
-    logger.info("  Freed memory [OK]“")
+    logger.info("  Freed memory [OK]")
     
     # ========================================================================
     # FIT RESTRICTED MODELS (one per feature space)
@@ -199,12 +206,12 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         logger.info(f"Saving restricted model to {model_path}...")
         with open(model_path, 'wb') as f:
             pickle.dump(model_restricted, f)
-        logger.info("  Saved [OK]“")
+        logger.info("  Saved [OK]")
         
         # Clean up
         del model_restricted
         gc.collect()
-        logger.info("  Freed memory [OK]“")
+        logger.info("  Freed memory [OK]")
     
     return results
 
@@ -248,13 +255,13 @@ def save_results(subject, train_sessions, test_sessions, results,
         save_dict[f'R2_unique_{space_name}'] = results['R2_unique'][space_name]
     
     np.savez_compressed(r2_file, **save_dict)
-    logger.info("  Saved [OK]“")
+    logger.info("  Saved [OK]")
     
     # Save voxel mask
     voxel_mask_file = output_dir / 'valid_voxels_mask.npy'
     logger.info(f"Saving voxel mask to {voxel_mask_file}...")
     np.save(voxel_mask_file, valid_voxels_mask)
-    logger.info("  Saved [OK]“")
+    logger.info("  Saved [OK]")
     
     # Save metadata
     metadata_file = output_dir / 'metadata.json'
@@ -280,7 +287,7 @@ def save_results(subject, train_sessions, test_sessions, results,
     
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)
-    logger.info("  Saved [OK]“")
+    logger.info("  Saved [OK]")
     
     # Print summary
     logger.info("")
@@ -345,12 +352,40 @@ def main():
     backend = set_backend(args.backend, on_error="warn")
     logger.info(f"Using backend: {backend}")
     
-    # Create output directory
+    # Create experiment configuration
+    logger.info("")
+    logger.info("="*80)
+    logger.info("EXPERIMENT CONFIGURATION")
+    logger.info("="*80)
+    params = PARAMETERS['variance_partitioning']
+    config, experiment_id = create_experiment_config(
+        feature_spaces=FEATURE_SPACES,
+        delays=params['delays'],
+        n_alphas=params['n_alphas'],
+        alpha_min=params['alpha_min'],
+        alpha_max=params['alpha_max'],
+        baseline_filtering=not args.skip_baseline_filtering
+    )
+    logger.info(f"Experiment ID: {experiment_id}")
+    logger.info(f"Timestamp: {config['timestamp']}")
+    logger.info(f"Delays: {config['encoding_model']['delays']}")
+    logger.info(f"Alpha range: 10^{config['encoding_model']['alpha_min']} to 10^{config['encoding_model']['alpha_max']}")
+    logger.info(f"N alphas: {config['encoding_model']['n_alphas']}")
+    logger.info(f"Baseline filtering: {config['preprocessing']['baseline_filtering']}")
+    
+    # Create output directory with experiment ID
     output_dir = get_output_directory(
-        args.subject, train_sessions, test_sessions, 
+        args.subject, train_sessions, test_sessions, experiment_id,
         PATHS['variance_partitioning']
     )
     logger.info(f"Output directory: {output_dir}")
+    
+    # Save experiment config
+    config_path = output_dir / 'config.json'
+    logger.info(f"Saving config to: {config_path}")
+    with open(config_path, 'w') as f:
+        json.dump(config, f, indent=2)
+    logger.info("  Saved [OK]")
     
     # ========================================================================
     # LOAD DATA

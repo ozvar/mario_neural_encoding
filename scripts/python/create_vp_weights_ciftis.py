@@ -218,8 +218,8 @@ def create_summary_weight_ciftis(weights_selective, selective_mask, valid_voxels
     return created_files
 
 
-def create_all_weight_ciftis(subject, train_sessions, test_sessions, feature_space,
-                             threshold_suffix='unique_thresh0p010',
+def create_all_weight_ciftis(subject, train_sessions, test_sessions, experiment_id, 
+                             feature_space, threshold_suffix='unique_thresh0p010',
                              fmriprep_path=PATHS['fmriprep_data'],
                              vp_results_path=None,
                              figures_path=PATHS['figures']):
@@ -235,6 +235,8 @@ def create_all_weight_ciftis(subject, train_sessions, test_sessions, feature_spa
     subject : int
     train_sessions : list of int
     test_sessions : list of int
+    experiment_id : str
+        Timestamp-based experiment identifier
     feature_space : str
         Name of feature space (e.g., 'activity', 'motor')
     fmriprep_path : Path
@@ -254,15 +256,14 @@ def create_all_weight_ciftis(subject, train_sessions, test_sessions, feature_spa
     print(f"Feature space: {feature_space}")
     print()
     
-    # Construct variance partitioning directory
+    # Construct variance partitioning directory with experiment ID
     if vp_results_path is None:
         vp_results_path = PATHS.get('variance_partitioning',
                                      PATHS['models'].parent / 'variance_partitioning')
-    
     train_str = f"{min(train_sessions):03d}-{max(train_sessions):03d}"
     test_str = f"{min(test_sessions):03d}-{max(test_sessions):03d}"
-    dir_name = f'sub-{subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
-    vp_output_dir = vp_results_path / dir_name
+    dataset_dir = f'sub-{subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
+    vp_output_dir = vp_results_path / dataset_dir / experiment_id
     
     if not vp_output_dir.exists():
         raise FileNotFoundError(f"Variance partitioning results not found: {vp_output_dir}")
@@ -284,7 +285,7 @@ def create_all_weight_ciftis(subject, train_sessions, test_sessions, feature_spa
     print()
     
     # Create output directory
-    cifti_output_dir = figures_path / 'weight_ciftis' / dir_name
+    cifti_output_dir = figures_path / 'weight_ciftis' / dataset_dir / experiment_id
     cifti_output_dir.mkdir(parents=True, exist_ok=True)
     print(f"Saving CIFTIs to: {cifti_output_dir}")
     print()
@@ -353,6 +354,8 @@ def main():
                        help='Training session numbers (e.g., 6 7 8 9)')
     parser.add_argument('--test-sessions', type=int, nargs='+', required=True,
                        help='Test session numbers (e.g., 20 21)')
+    parser.add_argument('--experiment-id', type=str, required=True,
+                       help='Experiment ID (timestamp format: YYYYmmdd_HHMMSS)')
     parser.add_argument('--feature-space', type=str, required=True,
                        choices=['perception', 'motor', 'action', 'scene', 'activity'],
                        help='Which feature space to visualize')
@@ -363,8 +366,8 @@ def main():
     
     # Create CIFTIs
     created_files = create_all_weight_ciftis(
-        args.subject, args.train_sessions, args.test_sessions, args.feature_space,
-        threshold_suffix=args.threshold_suffix
+        args.subject, args.train_sessions, args.test_sessions, args.experiment_id,
+        args.feature_space, threshold_suffix=args.threshold_suffix
     )
     
     return created_files

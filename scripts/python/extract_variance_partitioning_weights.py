@@ -42,12 +42,12 @@ def load_variance_partitioning_results(output_dir, logger_func=print):
     with open(model_path, 'rb') as f:
         model_full = pickle.load(f)
     
-    # Load R² scores
+    # Load R^2 scores
     r2_path = output_dir / 'R2_scores.npz'
     if not r2_path.exists():
-        raise FileNotFoundError(f"R² scores not found: {r2_path}")
+        raise FileNotFoundError(f"R^2 scores not found: {r2_path}")
     
-    logger_func(f"  Loading R² scores from: {r2_path}")
+    logger_func(f"  Loading R^2 scores from: {r2_path}")
     R2_data = np.load(r2_path)
     R2_scores = {key: R2_data[key] for key in R2_data.files}
     
@@ -61,7 +61,7 @@ def load_variance_partitioning_results(output_dir, logger_func=print):
         metadata = json.load(f)
     
     logger_func(f"  Model type: {type(model_full)}")
-    logger_func(f"  R² arrays: {list(R2_scores.keys())}")
+    logger_func(f"  R^2 arrays: {list(R2_scores.keys())}")
     logger_func(f"  Voxels: {metadata['n_voxels_kept']}")
     logger_func(f"  Features: {metadata['n_features_kept']}")
     
@@ -390,6 +390,8 @@ def main():
                        help='Training session numbers (e.g., 7 8 9)')
     parser.add_argument('--test-sessions', type=int, nargs='+', required=True,
                        help='Test session numbers (e.g., 10)')
+    parser.add_argument('--experiment-id', type=str, required=True,
+                       help='Experiment ID (timestamp format: YYYYmmdd_HHMMSS)')
     parser.add_argument('--feature-space', type=str, required=True,
                        choices=['perception', 'motor', 'action', 'scene', 'activity'],
                        help='Which feature space to extract')
@@ -403,11 +405,11 @@ def main():
     
     args = parser.parse_args()
     
-    # Construct output directory path
+    # Construct output directory path with experiment ID
     train_str = f"{min(args.train_sessions):03d}-{max(args.train_sessions):03d}"
     test_str = f"{min(args.test_sessions):03d}-{max(args.test_sessions):03d}"
-    dir_name = f'sub-{args.subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
-    output_dir = PATHS['variance_partitioning'] / dir_name
+    dataset_dir = f'sub-{args.subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
+    output_dir = PATHS['variance_partitioning'] / dataset_dir / args.experiment_id
     
     if not output_dir.exists():
         raise FileNotFoundError(f"Variance partitioning results not found: {output_dir}")
