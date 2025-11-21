@@ -29,6 +29,7 @@ from mario_encoding.utils.experiment_utils import create_experiment_config, save
 from mario_encoding.utils.data_loading import (
     concatenate_sessions_with_names,
     filter_baseline_periods,
+    select_and_validate_features,
     filter_zero_variance_features,
     filter_zero_variance_voxels,
     preprocess_data
@@ -407,6 +408,29 @@ def main():
         args.subject, test_sessions, PATHS['practice_phase_metadata'],
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
+    
+    # ========================================================================
+    # SELECT FEATURES ACCORDING TO CONFIG
+    # ========================================================================
+    logger.info("")
+    logger.info("="*80)
+    logger.info("FEATURE SELECTION FROM CONFIG")
+    logger.info("="*80)
+    
+    logger.info("Selecting features for training data...")
+    X_train, feature_names, selection_mask_train = select_and_validate_features(
+        X_train, feature_names, FEATURE_SPACES, logger
+    )
+    
+    logger.info("")
+    logger.info("Selecting features for test data...")
+    X_test, feature_names_test, selection_mask_test = select_and_validate_features(
+        X_test, feature_names, FEATURE_SPACES, logger
+    )
+    
+    # Verify selection masks match
+    if not np.array_equal(selection_mask_train, selection_mask_test):
+        raise ValueError("Feature selection masks differ between train and test data!")
     
     # ========================================================================
     # FILTER BASELINE PERIODS

@@ -14,12 +14,16 @@ def map_features_to_spaces(feature_names, valid_features_mask, feature_spaces_di
     """
     Map surviving features (after filtering) to their feature spaces.
     
+    NOTE: At this point, feature_names should already be a subset matching 
+    FEATURE_SPACES (via select_and_validate_features). This function only
+    handles the zero-variance filtering that happened after selection.
+    
     Parameters:
     -----------
     feature_names : list of str
-        Original feature names before filtering
+        Selected features (from config) before zero-variance filtering
     valid_features_mask : boolean array
-        Mask indicating which features survived zero-variance filtering
+        Mask indicating which selected features survived zero-variance filtering
     feature_spaces_dict : dict
         Keys are space names, values are lists of feature names in each space
     logger : logging.Logger
@@ -31,7 +35,10 @@ def map_features_to_spaces(feature_names, valid_features_mask, feature_spaces_di
     space_to_indices : dict
         Keys are space names, values are arrays of column indices in filtered X
     """
-    logger.info("Mapping features to feature spaces...")
+    logger.info("")
+    logger.info("="*80)
+    logger.info("FEATURE SPACE MAPPING (after zero-variance filtering)")
+    logger.info("="*80)
     
     # Get list of kept features
     kept_features = [name for name, keep in zip(feature_names, valid_features_mask) if keep]
@@ -39,20 +46,29 @@ def map_features_to_spaces(feature_names, valid_features_mask, feature_spaces_di
     feature_spaces_filtered = {}
     space_to_indices = {}
     
-    for space_name, space_features in feature_spaces_dict.items():
+    for space_name in sorted(feature_spaces_dict.keys()):
+        space_features = feature_spaces_dict[space_name]
         surviving_indices = []
         surviving_names = []
+        dropped_names = []
         
         for feat in space_features:
             if feat in kept_features:
                 idx = kept_features.index(feat)
                 surviving_indices.append(idx)
                 surviving_names.append(feat)
+            elif feat in feature_names:  # Was selected but filtered out
+                dropped_names.append(feat)
+            # If feat not in feature_names, it was already caught in selection step
         
         feature_spaces_filtered[space_name] = surviving_names
         space_to_indices[space_name] = np.array(surviving_indices)
         
         logger.info(f"  {space_name}: {len(surviving_names)}/{len(space_features)} features survived")
+        if dropped_names:
+            logger.info(f"    Dropped (zero variance): {dropped_names}")
+    
+    logger.info("="*80)
     
     return feature_spaces_filtered, space_to_indices
 
@@ -80,7 +96,7 @@ def validate_all_spaces_nonempty(feature_spaces_filtered, logger):
         logger.error(error_msg)
         raise ValueError(error_msg)
     
-    logger.info("  All feature spaces have >0 features ✓")
+    logger.info("  All feature spaces have >0 features ")
 
 
 def expand_feature_space_indices_for_delays(space_to_indices, n_features_original, delays, logger):
@@ -209,7 +225,7 @@ def fit_full_model(X_train_list, Y_train, run_onsets_train, params, backend, log
     
     # Fit
     model.fit(X_train_list, Y_train)
-    logger.info("  Model fitting complete ✓")
+    logger.info("  Model fitting complete ")
     
     return model
 
@@ -264,7 +280,7 @@ def fit_restricted_model(X_train_list, Y_train, excluded_space_name, space_names
     )
     
     model.fit(X_train_restricted, Y_train)
-    logger.info("  Model fitting complete ✓")
+    logger.info("  Model fitting complete ")
     
     return model
 
@@ -273,14 +289,14 @@ def compute_unique_variance(R2_full, R2_restricted_dict, logger):
     """
     Compute unique variance explained by each feature space.
     
-    Unique variance for space X = R²_full - R²_without_X
+    Unique variance for space X = R2_full - R2_without_X
     
     Parameters:
     -----------
     R2_full : array of shape (n_voxels,)
-        Test R² scores from full model
+        Test R2 scores from full model
     R2_restricted_dict : dict
-        Keys are space names, values are test R² scores from models without that space
+        Keys are space names, values are test R2 scores from models without that space
     logger : logging.Logger
         
     Returns:
@@ -300,8 +316,8 @@ def compute_unique_variance(R2_full, R2_restricted_dict, logger):
         pct_positive = (R2_unique[space_name] > 0).sum() / len(R2_unique[space_name]) * 100
         
         logger.info(f"  {space_name}:")
-        logger.info(f"    Mean unique R²: {mean_unique:.6f}")
-        logger.info(f"    Median unique R²: {median_unique:.6f}")
+        logger.info(f"    Mean unique R2: {mean_unique:.6f}")
+        logger.info(f"    Median unique R2: {median_unique:.6f}")
         logger.info(f"    % voxels with positive unique variance: {pct_positive:.1f}%")
     
     return R2_unique
@@ -323,20 +339,20 @@ def validate_variance_partition(R2_full, R2_unique, logger):
     # 1. Check that sum of unique variances is reasonable
     sum_unique = np.sum([v for v in R2_unique.values()], axis=0)
     
-    logger.info("  Relationship between sum(unique) and R²_full:")
-    logger.info(f"    Mean R²_full: {R2_full.mean():.6f}")
+    logger.info("  Relationship between sum(unique) and R2_full:")
+    logger.info(f"    Mean R2_full: {R2_full.mean():.6f}")
     logger.info(f"    Mean sum(unique): {sum_unique.mean():.6f}")
-    logger.info(f"    Ratio sum(unique)/R²_full: {(sum_unique.mean() / R2_full.mean()):.3f}")
+    logger.info(f"    Ratio sum(unique)/R2_full: {(sum_unique.mean() / R2_full.mean()):.3f}")
     
-    # Sum of unique can exceed R²_full due to overlapping explained variance
+    # Sum of unique can exceed R2_full due to overlapping explained variance
     # But it should be within reasonable bounds
     ratio = sum_unique.mean() / (R2_full.mean() + 1e-10)
     if ratio > 5.0:
-        logger.warning(f"  ⚠ Sum of unique variances is {ratio:.1f}x larger than R²_full - may indicate issues")
+        logger.warning(f"   Sum of unique variances is {ratio:.1f}x larger than R2_full - may indicate issues")
     elif ratio < 0.2:
-        logger.warning(f"  ⚠ Sum of unique variances is only {ratio:.1f}x R²_full - features may be highly redundant")
+        logger.warning(f"   Sum of unique variances is only {ratio:.1f}x R2_full - features may be highly redundant")
     else:
-        logger.info(f"  ✓ Variance decomposition appears reasonable")
+        logger.info(f"   Variance decomposition appears reasonable")
     
     # 2. Check for negative unique variances (expected in some voxels)
     for space_name, unique_variance in R2_unique.items():
@@ -345,4 +361,4 @@ def validate_variance_partition(R2_full, R2_unique, logger):
         logger.info(f"  {space_name}: {n_negative} voxels ({pct_negative:.1f}%) with negative unique variance")
         
         if pct_negative > 50:
-            logger.warning(f"    ⚠ >50% negative values may indicate this space adds little unique information")
+            logger.warning(f"     >50% negative values may indicate this space adds little unique information")
