@@ -1,4 +1,8 @@
 from .file_utils import find_events
+from .experiment_utils import (
+        create_experiment_config,
+        save_experiment_config
+        )
 from .viz_utils import (
         sns_styleset,
         pandas_styleset,
