@@ -92,11 +92,14 @@ def get_output_directory(subject, train_sessions, test_sessions, experiment_id, 
 
 def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test, 
                                     space_names_ordered, run_onsets_train,
-                                    params, backend, output_dir, logger):
+                                    params, backend, output_dir, 
+                                    compute_product_measure, compute_unique_variance, logger):
     """
-    Fit all models sequentially, saving each immediately to avoid memory issues.
+    Fit models and compute variance decomposition metrics.
     
-    Returns R2 scores only, not models (models are saved to disk).
+    Always fits full model. Optionally computes:
+    - Product measure (1 model, fast)
+    - Unique variance (N+1 models, slower)
     
     Parameters:
     -----------
@@ -113,17 +116,23 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         Variance partitioning parameters from config
     backend : str
     output_dir : Path
+    compute_product_measure : bool
+        Whether to compute product measure decomposition
+    compute_unique_variance : bool
+        Whether to fit restricted models and compute unique variance
     logger : logging.Logger
         
     Returns:
     --------
-    results : dict with keys 'R2_full', 'R2_restricted', 'R2_unique'
+    results : dict with keys 'R2_full', optionally 'R2_restricted', 'R2_unique', 'product_measure'
     """
     results = {
         'R2_full': None,
         'R2_restricted': {},
-        'R2_unique': {}
+        'R2_unique': {},
+        'product_measure': {}
     }
+    
     # ========================================================================
     # FIT FULL MODEL
     # ========================================================================
@@ -144,10 +153,26 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         results['R2_full'] = results['R2_full'].cpu().numpy()
     
     logger.info(f"  Mean test R2: {results['R2_full'].mean():.6f}")
-    logger.info(f"  Median test R2: {np.median(results['R2_full']):.6f}")
     logger.info(f"  Max test R2: {results['R2_full'].max():.6f}")
     
-    # Save model immediately
+    # ========================================================================
+    # COMPUTE PRODUCT MEASURE (if requested)
+    # ========================================================================
+    if compute_product_measure:
+        logger.info("")
+        logger.info("="*80)
+        logger.info("COMPUTING PRODUCT MEASURE")
+        logger.info("="*80)
+        from mario_encoding.variance_partitioning import compute_product_measure as compute_pm
+        from mario_encoding.variance_partitioning import validate_product_measure
+        
+        results['product_measure'] = compute_pm(
+            model_full, X_test_list, Y_test, space_names_ordered, logger
+        )
+        
+        validate_product_measure(results['product_measure'], results['R2_full'], logger)
+    
+    # Save full model
     model_path = output_dir / 'model_full.pkl'
     logger.info(f"Saving full model to {model_path}...")
     with open(model_path, 'wb') as f:
@@ -160,59 +185,68 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     logger.info("  Freed memory [OK]")
     
     # ========================================================================
-    # FIT RESTRICTED MODELS (one per feature space)
+    # FIT RESTRICTED MODELS (if unique variance requested)
     # ========================================================================
-    for space_name in space_names_ordered:
+    if compute_unique_variance:
         logger.info("")
         logger.info("="*80)
-        logger.info(f"FITTING RESTRICTED MODEL (excluding {space_name})")
+        logger.info("COMPUTING UNIQUE VARIANCE (fitting N restricted models)")
         logger.info("="*80)
         
-        # Get index to exclude
-        excluded_idx = space_names_ordered.index(space_name)
-        
-        # Create restricted feature lists
-        X_train_restricted = [X_train_list[i] for i in range(len(X_train_list)) if i != excluded_idx]
-        X_test_restricted = [X_test_list[i] for i in range(len(X_test_list)) if i != excluded_idx]
-        
-        # Fit restricted model
-        model_restricted = fit_restricted_model(
-            X_train_list, Y_train, space_name, space_names_ordered,
-            run_onsets_train, params, backend, logger
-        )
-        
-        # Score on test set
-        logger.info("Scoring restricted model on test set...")
-        R2_restricted = model_restricted.score(X_test_restricted, Y_test)
-        
-        # Convert to numpy if needed
-        if hasattr(R2_restricted, 'cpu'):
-            R2_restricted = R2_restricted.cpu().numpy()
-        
-        results['R2_restricted'][space_name] = R2_restricted
-        
-        logger.info(f"  Mean test R2 (without {space_name}): {R2_restricted.mean():.6f}")
-        logger.info(f"  Median test R2: {np.median(R2_restricted):.6f}")
-        
-        # Compute unique variance immediately
-        R2_unique = results['R2_full'] - R2_restricted
-        results['R2_unique'][space_name] = R2_unique
-        
-        logger.info(f"  Mean unique R2 for {space_name}: {R2_unique.mean():.6f}")
-        logger.info(f"  Median unique R2: {np.median(R2_unique):.6f}")
-        logger.info(f"  % voxels with positive unique R2: {(R2_unique > 0).sum() / len(R2_unique) * 100:.1f}%")
-        
-        # Save model
-        model_path = output_dir / f'model_no_{space_name}.pkl'
-        logger.info(f"Saving restricted model to {model_path}...")
-        with open(model_path, 'wb') as f:
-            pickle.dump(model_restricted, f)
-        logger.info("  Saved [OK]")
-        
-        # Clean up
-        del model_restricted
-        gc.collect()
-        logger.info("  Freed memory [OK]")
+        for space_name in space_names_ordered:
+            logger.info("")
+            logger.info("="*80)
+            logger.info(f"FITTING RESTRICTED MODEL (excluding {space_name})")
+            logger.info("="*80)
+            
+            # Get index to exclude
+            excluded_idx = space_names_ordered.index(space_name)
+            
+            # Create restricted feature lists
+            X_train_restricted = [X_train_list[i] for i in range(len(X_train_list)) if i != excluded_idx]
+            X_test_restricted = [X_test_list[i] for i in range(len(X_test_list)) if i != excluded_idx]
+            
+            # Fit restricted model
+            model_restricted = fit_restricted_model(
+                X_train_list, Y_train, space_name, space_names_ordered,
+                run_onsets_train, params, backend, logger
+            )
+            
+            # Score on test set
+            logger.info("Scoring restricted model on test set...")
+            R2_restricted = model_restricted.score(X_test_restricted, Y_test)
+            
+            # Convert to numpy if needed
+            if hasattr(R2_restricted, 'cpu'):
+                R2_restricted = R2_restricted.cpu().numpy()
+            
+            results['R2_restricted'][space_name] = R2_restricted
+            
+            logger.info(f"  Mean test R2 (without {space_name}): {R2_restricted.mean():.6f}")
+            
+            # Compute unique variance immediately
+            R2_unique = results['R2_full'] - R2_restricted
+            results['R2_unique'][space_name] = R2_unique
+            
+            logger.info(f"  Mean unique R2 for {space_name}: {R2_unique.mean():.6f}")
+            logger.info(f"  % voxels with positive unique R2: {(R2_unique > 0).sum() / len(R2_unique) * 100:.1f}%")
+            
+            # Save model
+            model_path = output_dir / f'model_no_{space_name}.pkl'
+            logger.info(f"Saving restricted model to {model_path}...")
+            with open(model_path, 'wb') as f:
+                pickle.dump(model_restricted, f)
+            logger.info("  Saved [OK]")
+            
+            # Clean up
+            del model_restricted
+            gc.collect()
+            logger.info("  Freed memory [OK]")
+    else:
+        logger.info("")
+        logger.info("="*80)
+        logger.info("SKIPPING UNIQUE VARIANCE COMPUTATION (not requested)")
+        logger.info("="*80)
     
     return results
 
@@ -221,7 +255,7 @@ def save_results(subject, train_sessions, test_sessions, results,
                 feature_spaces_filtered, space_to_indices, valid_voxels_mask,
                 feature_names, valid_features_mask, output_dir, logger):
     """
-    Save R2 scores and metadata.
+    Save R2 scores, Fisher z transforms, product measures, and metadata.
     
     Parameters:
     -----------
@@ -229,7 +263,7 @@ def save_results(subject, train_sessions, test_sessions, results,
     train_sessions : list of int
     test_sessions : list of int
     results : dict
-        Contains R2_full, R2_restricted, R2_unique
+        Contains R2_full, optionally R2_restricted, R2_unique, product_measure
     feature_spaces_filtered : dict
     space_to_indices : dict
     valid_voxels_mask : boolean array
@@ -242,18 +276,41 @@ def save_results(subject, train_sessions, test_sessions, results,
     logger.info("SAVING RESULTS")
     logger.info("="*80)
     
+    from mario_encoding.variance_partitioning import fisher_z_transform
+    
+    # Compute Fisher z transforms
+    logger.info("Computing Fisher z transforms...")
+    fisher_z_full = fisher_z_transform(results['R2_full'])
+    logger.info(f"  Fisher z (full): mean={fisher_z_full.mean():.6f}, max={fisher_z_full.max():.6f}")
+    
     # Save R2 scores in compressed format
     r2_file = output_dir / 'R2_scores.npz'
     logger.info(f"Saving R2 scores to {r2_file}...")
     
     save_dict = {
         'R2_full': results['R2_full'],
+        'fisher_z_R2_full': fisher_z_full,
     }
     
-    # Add restricted and unique R2 for each space
-    for space_name in results['R2_restricted'].keys():
-        save_dict[f'R2_no_{space_name}'] = results['R2_restricted'][space_name]
-        save_dict[f'R2_unique_{space_name}'] = results['R2_unique'][space_name]
+    # Add restricted and unique R2 for each space (if computed)
+    if results['R2_unique']:
+        logger.info("Adding unique variance and Fisher z transforms...")
+        for space_name in results['R2_restricted'].keys():
+            save_dict[f'R2_no_{space_name}'] = results['R2_restricted'][space_name]
+            save_dict[f'R2_unique_{space_name}'] = results['R2_unique'][space_name]
+            
+            # Fisher z for restricted and unique
+            fisher_z_restricted = fisher_z_transform(results['R2_restricted'][space_name])
+            fisher_z_unique = fisher_z_transform(results['R2_unique'][space_name])
+            save_dict[f'fisher_z_R2_no_{space_name}'] = fisher_z_restricted
+            save_dict[f'fisher_z_R2_unique_{space_name}'] = fisher_z_unique
+    
+    # Add product measures (if computed)
+    if results['product_measure']:
+        logger.info("Adding product measures...")
+        for space_name, pm_values in results['product_measure'].items():
+            save_dict[f'product_measure_{space_name}'] = pm_values
+            logger.info(f"  {space_name}: mean={pm_values.mean():.6f}")
     
     np.savez_compressed(r2_file, **save_dict)
     logger.info("  Saved [OK]")
@@ -276,6 +333,12 @@ def save_results(subject, train_sessions, test_sessions, results,
         'n_voxels_kept': int(valid_voxels_mask.sum()),
         'n_features_original': int(len(feature_names)),
         'n_features_kept': int(valid_features_mask.sum()),
+        'computed_metrics': {
+            'R2_full': True,
+            'fisher_z': True,
+            'product_measure': bool(results['product_measure']),
+            'unique_variance': bool(results['R2_unique'])
+        },
         'feature_spaces': {
             name: features for name, features in feature_spaces_filtered.items()
         },
@@ -319,6 +382,16 @@ def main():
                        help='Himalaya computational backend')
     parser.add_argument('--skip-baseline-filtering', action='store_true',
                        help='Skip baseline/ITI filtering (use all TRs)')
+    parser.add_argument('--compute-product-measure', action='store_true', default=True,
+                       help='Compute product measure decomposition (default: True)')
+    parser.add_argument('--no-compute-product-measure', action='store_false', 
+                       dest='compute_product_measure',
+                       help='Skip product measure computation')
+    parser.add_argument('--compute-unique-variance', action='store_true', default=False,
+                       help='Compute unique variance by fitting N+1 models (default: False)')
+    parser.add_argument('--no-compute-unique-variance', action='store_false',
+                       dest='compute_unique_variance',
+                       help='Skip unique variance computation (default)')
     
     args = parser.parse_args()
     
@@ -348,6 +421,8 @@ def main():
     logger.info(f"Test sessions: {test_sessions}")
     logger.info(f"Backend: {args.backend}")
     logger.info(f"Feature spaces: {list(FEATURE_SPACES.keys())}")
+    logger.info(f"Compute product measure: {args.compute_product_measure}")
+    logger.info(f"Compute unique variance: {args.compute_unique_variance}")
     
     # Set backend
     backend = set_backend(args.backend, on_error="warn")
@@ -409,7 +484,6 @@ def main():
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
     
-    # After loading both datasets, before selection
     if feature_names != feature_names_test_original:
         raise ValueError("Train and test data have different features before selection!")
 
@@ -560,18 +634,22 @@ def main():
     results = fit_and_save_models_sequentially(
         X_train_list, Y_train, X_test_list, Y_test,
         space_names_ordered, run_onsets_train,
-        params, backend, output_dir, logger
+        params, backend, output_dir,
+        args.compute_product_measure, args.compute_unique_variance, logger
     )
     
     # ========================================================================
-    # VALIDATE VARIANCE PARTITIONING
+    # VALIDATE METRICS
     # ========================================================================
     logger.info("")
     logger.info("="*80)
     logger.info("VALIDATION")
     logger.info("="*80)
     
-    validate_variance_partition(results['R2_full'], results['R2_unique'], logger)
+    if results['R2_unique']:
+        validate_variance_partition(results['R2_full'], results['R2_unique'], logger)
+    else:
+        logger.info("Unique variance not computed - skipping validation")
     
     # ========================================================================
     # SAVE RESULTS

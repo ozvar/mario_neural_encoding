@@ -323,6 +323,139 @@ def compute_unique_variance(R2_full, R2_restricted_dict, logger):
     return R2_unique
 
 
+def compute_product_measure(model_full, X_test_list, Y_test, space_names_ordered, logger):
+    """
+    Compute product measure for each feature space from joint model.
+    
+    Product measure decomposes R^2 into contributions from each feature space:
+    R_tilde_j = sum(y_pred_j * (2*y - y_pred_full)) / sum(y^2)
+    
+    where y_pred_j is the sub-prediction from feature space j using the joint model weights.
+    
+    Parameters:
+    -----------
+    model_full : fitted GroupRidgeCV
+        Full model with all feature spaces
+    X_test_list : list of arrays
+        Test features, one array per feature space
+    Y_test : array of shape (n_samples, n_voxels)
+        Test targets
+    space_names_ordered : list of str
+        Feature space names in order matching X_test_list
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    product_measures : dict
+        Keys are space names, values are product measure arrays (n_voxels,)
+    """
+    logger.info("Computing product measure for each feature space...")
+    
+    # Get full model prediction
+    Y_pred_full = model_full.predict(X_test_list)
+    if hasattr(Y_pred_full, 'cpu'):
+        Y_pred_full = Y_pred_full.cpu().numpy()
+    
+    # Get weights from model - shape depends on delays
+    # model_full.coef_ has shape (n_targets, n_features_total) or (n_targets, n_features_per_group, n_groups)
+    weights = model_full.coef_
+    if hasattr(weights, 'cpu'):
+        weights = weights.cpu().numpy()
+    
+    # Compute sub-predictions for each feature space
+    product_measures = {}
+    
+    # Determine if we need to handle grouped weights structure
+    if weights.ndim == 3:
+        # Shape: (n_voxels, n_features_per_delay, n_groups)
+        # Need to index by group
+        for idx, space_name in enumerate(space_names_ordered):
+            X_space = X_test_list[idx]
+            weights_space = weights[:, :, idx]  # (n_voxels, n_features_for_this_space)
+            
+            # Compute sub-prediction: X_space @ weights_space.T
+            Y_pred_space = X_space @ weights_space.T  # (n_samples, n_voxels)
+
+            # Compute product measure per voxel
+            numerator = np.sum(Y_pred_space * (2 * Y_test - Y_pred_full), axis=0)  # (n_voxels,)
+            denominator = np.sum(Y_test ** 2, axis=0)  # (n_voxels,)
+
+            product_measures[space_name] = numerator / np.maximum(denominator, 1.0)
+            
+            mean_pm = product_measures[space_name].mean()
+            n_negative = (product_measures[space_name] < 0).sum()
+            pct_negative = n_negative / len(product_measures[space_name]) * 100
+            
+            logger.info(f"  {space_name}: mean={mean_pm:.6f}, {n_negative} negative ({pct_negative:.1f}%)")
+    else:
+        # Fallback: weights shape (n_voxels, n_features_total)
+        # Need to manually slice by cumulative feature counts
+        feature_start = 0
+        for idx, space_name in enumerate(space_names_ordered):
+            X_space = X_test_list[idx]
+            n_features_space = X_space.shape[1]
+            weights_space = weights[feature_start:feature_start + n_features_space, :]
+            
+            Y_pred_space = X_space @ weights_space
+
+            numerator = np.sum(Y_pred_space * (2 * Y_test - Y_pred_full), axis=0)
+            denominator = np.sum(Y_test ** 2, axis=0)
+            
+            product_measures[space_name] = numerator / np.maximum(denominator, 1.0)
+            
+            mean_pm = product_measures[space_name].mean()
+            n_negative = (product_measures[space_name] < 0).sum()
+            pct_negative = n_negative / len(product_measures[space_name]) * 100
+            
+            logger.info(f"  {space_name}: mean={mean_pm:.6f}, {n_negative} negative ({pct_negative:.1f}%)")
+            
+            feature_start += n_features_space
+    
+    # Verify decomposition: sum should equal R^2
+    sum_product = np.sum([v for v in product_measures.values()], axis=0)
+    R2_full = model_full.score(X_test_list, Y_test)
+    if hasattr(R2_full, 'cpu'):
+        R2_full = R2_full.cpu().numpy()
+    
+    logger.info(f"  Sum of product measures: mean={sum_product.mean():.6f}")
+    logger.info(f"  R2_full: mean={R2_full.mean():.6f}")
+    logger.info(f"  Difference: mean={np.abs(sum_product - R2_full).mean():.8f}")
+    
+    return product_measures
+
+
+def fisher_z_transform(R2_values):
+    """
+    Apply Fisher z-transform to R^2 values.
+    
+    Transform: z = 0.5 * log((1 + r) / (1 - r))
+    where r = sqrt(R^2) (taking positive root)
+    
+    Parameters:
+    -----------
+    R2_values : array or dict of arrays
+        R^2 values to transform. Can be single array or dict of arrays.
+        
+    Returns:
+    --------
+    fisher_z : array or dict of arrays (same structure as input)
+        Fisher z-transformed values
+    """
+    def transform_single(R2):
+        # Clip R2 to valid range [0, 1)
+        R2_clipped = np.clip(R2, 0, 0.9999)
+        # Convert to correlation coefficient
+        r = np.sqrt(R2_clipped)
+        # Apply Fisher z transform
+        z = np.arctanh(r)
+        return z
+    
+    if isinstance(R2_values, dict):
+        return {key: transform_single(val) for key, val in R2_values.items()}
+    else:
+        return transform_single(R2_values)
+
+
 def validate_variance_partition(R2_full, R2_unique, logger):
     """
     Sanity checks on variance partitioning results.
@@ -362,3 +495,36 @@ def validate_variance_partition(R2_full, R2_unique, logger):
         
         if pct_negative > 50:
             logger.warning(f"     >50% negative values may indicate this space adds little unique information")
+
+
+def validate_product_measure(product_measures, R2_full, logger):
+    """
+    Sanity checks on product measure results.
+    
+    Parameters:
+    -----------
+    product_measures : dict
+        Keys are space names, values are product measure arrays
+    R2_full : array of shape (n_voxels,)
+    logger : logging.Logger
+    """
+    logger.info("Validating product measure results...")
+    
+    # 1. Check that sum equals R2_full (should be exact by construction)
+    sum_product = np.sum([v for v in product_measures.values()], axis=0)
+    
+    logger.info("  Decomposition property (sum should equal R2_full):")
+    logger.info(f"    Mean R2_full: {R2_full.mean():.6f}")
+    logger.info(f"    Mean sum(product): {sum_product.mean():.6f}")
+    logger.info(f"    Mean absolute difference: {np.abs(sum_product - R2_full).mean():.8f}")
+    logger.info(f"    Max absolute difference: {np.abs(sum_product - R2_full).max():.8f}")
+    
+    # 2. Report negative values (expected with correlated feature spaces)
+    logger.info("  Negative contributions (expected with correlated spaces):")
+    for space_name, pm_values in product_measures.items():
+        n_negative = (pm_values < 0).sum()
+        pct_negative = n_negative / len(pm_values) * 100
+        logger.info(f"    {space_name}: {n_negative} voxels ({pct_negative:.1f}%)")
+        
+        if pct_negative > 80:
+            logger.warning(f"      >80% negative may indicate this space is primarily used for orthogonalization")
