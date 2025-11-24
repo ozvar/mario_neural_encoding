@@ -5,6 +5,7 @@ Adapted version of create_model_cifti.py that works with variance partitioning
 output structure (loads from R2_scores.npz and significance results).
 """
 import argparse
+import json
 import numpy as np
 import nibabel as nib
 from pathlib import Path
@@ -61,10 +62,14 @@ def create_vp_model_ciftis(subject, train_sessions, test_sessions, experiment_id
                            vp_results_path=None,
                            figures_path=PATHS['figures']):
     """
-    Create CIFTI maps for variance partitioning full model performance.
+    Create CIFTI maps for variance partitioning results.
     
     Creates CIFTIs for:
     - Test R2 scores
+    - Fisher z-transformed R2
+    - Product measure per feature space (if computed)
+    - Unique variance per feature space (if computed)
+    - Fisher z of unique variance (if computed)
     - Uncorrected p-values
     - FDR-corrected q-values
     - Significance masks
@@ -105,6 +110,22 @@ def create_vp_model_ciftis(subject, train_sessions, test_sessions, experiment_id
     if not vp_output_dir.exists():
         raise FileNotFoundError(f"Variance partitioning results not found: {vp_output_dir}")
     print(f"Loading from: {vp_output_dir}")
+    print()
+    
+    # Load metadata to check what was computed
+    metadata_file = vp_output_dir / 'metadata.json'
+    if not metadata_file.exists():
+        raise FileNotFoundError(f"Metadata not found: {metadata_file}")
+    with open(metadata_file, 'r') as f:
+        metadata = json.load(f)
+    computed_metrics = metadata.get('computed_metrics', {})
+    feature_spaces = list(metadata.get('feature_spaces', {}).keys())
+    
+    print("Computed metrics:")
+    print(f"  Product measure: {computed_metrics.get('product_measure', False)}")
+    print(f"  Unique variance: {computed_metrics.get('unique_variance', False)}")
+    print(f"  Fisher z: {computed_metrics.get('fisher_z', False)}")
+    print(f"Feature spaces: {feature_spaces}")
     print()
     
     # Load R2 scores from compressed npz file
@@ -176,6 +197,62 @@ def create_vp_model_ciftis(subject, train_sessions, test_sessions, experiment_id
     created_files['test_r2'] = test_r2_path
     print()
     
+    # Create Fisher z CIFTI if available
+    if 'fisher_z_R2_full' in r2_data:
+        print("Creating Fisher z CIFTI...")
+        fisher_z_scores = r2_data['fisher_z_R2_full']
+        fisher_z_path = cifti_output_dir / f'{dataset_dir}_{experiment_id}_fisher_z_r2.dscalar.nii'
+        create_cifti_from_scores(
+            fisher_z_scores, voxel_mask, template_path, fisher_z_path,
+            map_name='fisher_z_R2'
+        )
+        created_files['fisher_z_r2'] = fisher_z_path
+        print()
+    
+    # Create product measure CIFTIs if available
+    if computed_metrics.get('product_measure', False):
+        print("Creating product measure CIFTIs...")
+        for space in feature_spaces:
+            key = f'product_measure_{space}'
+            if key in r2_data:
+                pm_scores = r2_data[key]
+                pm_path = cifti_output_dir / f'{dataset_dir}_{experiment_id}_product_measure_{space}.dscalar.nii'
+                create_cifti_from_scores(
+                    pm_scores, voxel_mask, template_path, pm_path,
+                    map_name=f'product_measure_{space}'
+                )
+                created_files[f'product_measure_{space}'] = pm_path
+                print(f"  {space}: mean={pm_scores.mean():.6f}, min={pm_scores.min():.6f}, max={pm_scores.max():.6f}")
+        print()
+    
+    # Create unique variance CIFTIs if available
+    if computed_metrics.get('unique_variance', False):
+        print("Creating unique variance CIFTIs...")
+        for space in feature_spaces:
+            # Unique variance R2
+            unique_key = f'R2_unique_{space}'
+            if unique_key in r2_data:
+                unique_scores = r2_data[unique_key]
+                unique_path = cifti_output_dir / f'{dataset_dir}_{experiment_id}_unique_variance_{space}.dscalar.nii'
+                create_cifti_from_scores(
+                    unique_scores, voxel_mask, template_path, unique_path,
+                    map_name=f'unique_R2_{space}'
+                )
+                created_files[f'unique_variance_{space}'] = unique_path
+                print(f"  {space}: mean={unique_scores.mean():.6f}, positive={100*(unique_scores>0).mean():.1f}%")
+            
+            # Fisher z of unique variance
+            fisher_z_unique_key = f'fisher_z_R2_unique_{space}'
+            if fisher_z_unique_key in r2_data:
+                fisher_z_unique = r2_data[fisher_z_unique_key]
+                fisher_z_unique_path = cifti_output_dir / f'{dataset_dir}_{experiment_id}_fisher_z_unique_{space}.dscalar.nii'
+                create_cifti_from_scores(
+                    fisher_z_unique, voxel_mask, template_path, fisher_z_unique_path,
+                    map_name=f'fisher_z_unique_{space}'
+                )
+                created_files[f'fisher_z_unique_{space}'] = fisher_z_unique_path
+        print()
+    
     # Create significance CIFTIs if available
     if significance_available:
         print("Creating uncorrected p-value CIFTI...")
@@ -223,6 +300,23 @@ def create_vp_model_ciftis(subject, train_sessions, test_sessions, experiment_id
     print(f"  Positive: {(test_scores > 0).sum()}/{len(test_scores)} ({(test_scores > 0).mean()*100:.1f}%)")
     print(f"  R2 > 0.1: {(test_scores > 0.1).sum()} ({(test_scores > 0.1).mean()*100:.1f}%)")
     print(f"  R2 > 0.3: {(test_scores > 0.3).sum()} ({(test_scores > 0.3).mean()*100:.1f}%)")
+    
+    if computed_metrics.get('product_measure', False):
+        print(f"\nProduct measure:")
+        for space in feature_spaces:
+            key = f'product_measure_{space}'
+            if key in r2_data:
+                pm = r2_data[key]
+                print(f"  {space}: mean={pm.mean():.4f}, negative={100*(pm<0).mean():.1f}%")
+    
+    if computed_metrics.get('unique_variance', False):
+        print(f"\nUnique variance:")
+        for space in feature_spaces:
+            key = f'R2_unique_{space}'
+            if key in r2_data:
+                uv = r2_data[key]
+                print(f"  {space}: mean={uv.mean():.4f}, positive={100*(uv>0).mean():.1f}%")
+    
     if significance_available:
         print(f"\nSignificance:")
         print(f"  Uncorrected (p < 0.05): {sig_uncorrected.sum()} ({sig_uncorrected.mean()*100:.1f}%)")
