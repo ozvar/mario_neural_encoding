@@ -42,6 +42,8 @@ from mario_encoding.variance_partitioning import (
     fit_full_model,
     fit_restricted_model,
     compute_unique_variance,
+    compute_shared_variance,
+    compute_segregation_index,
     validate_variance_partition
 )
 
@@ -152,6 +154,7 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     if hasattr(results['R2_full'], 'cpu'):
         results['R2_full'] = results['R2_full'].cpu().numpy()
     
+    logger.info(f"  Total test R2: {results['R2_full'].sum():.6f}")
     logger.info(f"  Mean test R2: {results['R2_full'].mean():.6f}")
     logger.info(f"  Max test R2: {results['R2_full'].max():.6f}")
     
@@ -304,6 +307,19 @@ def save_results(subject, train_sessions, test_sessions, results,
             fisher_z_unique = fisher_z_transform(results['R2_unique'][space_name])
             save_dict[f'fisher_z_R2_no_{space_name}'] = fisher_z_restricted
             save_dict[f'fisher_z_R2_unique_{space_name}'] = fisher_z_unique
+        
+        # Compute shared variance and segregation index
+        logger.info("")
+
+        R2_shared = compute_shared_variance(results['R2_full'], results['R2_unique'], logger)
+        segregation_index = compute_segregation_index(results['R2_full'], results['R2_unique'], logger)
+        
+        save_dict['R2_shared'] = R2_shared
+        save_dict['segregation_index'] = segregation_index
+        
+        # Fisher z for shared variance
+        fisher_z_shared = fisher_z_transform(R2_shared)
+        save_dict['fisher_z_R2_shared'] = fisher_z_shared
     
     # Add product measures (if computed)
     if results['product_measure']:

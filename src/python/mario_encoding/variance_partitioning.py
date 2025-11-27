@@ -323,6 +323,75 @@ def compute_unique_variance(R2_full, R2_restricted_dict, logger):
     return R2_unique
 
 
+def compute_shared_variance(R2_full, R2_unique_dict, logger):
+    """
+    Compute shared variance across all feature spaces.
+    
+    Shared variance = R2_full - sum(unique variances)
+    
+    Parameters:
+    -----------
+    R2_full : array of shape (n_voxels,)
+        Test R2 scores from full model
+    R2_unique_dict : dict
+        Keys are space names, values are unique variance arrays
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    R2_shared : array of shape (n_voxels,)
+        Shared variance per voxel
+    """
+    logger.info("Computing shared variance across all feature spaces...")
+    sum_unique = np.sum([v for v in R2_unique_dict.values()], axis=0)
+    R2_shared = R2_full - sum_unique
+    mean_shared = R2_shared.mean()
+    median_shared = np.median(R2_shared)
+    pct_positive = (R2_shared > 0).sum() / len(R2_shared) * 100
+    logger.info(f"  Mean shared R2: {mean_shared:.6f}")
+    logger.info(f"  Median shared R2: {median_shared:.6f}")
+    logger.info(f"  % voxels with positive shared variance: {pct_positive:.1f}%")
+    logger.info(f"  Ratio shared/total: {mean_shared / R2_full.mean():.3f}")
+
+    return R2_shared
+
+
+def compute_segregation_index(R2_full, R2_unique_dict, logger):
+    """
+    Compute segregation index as proportion of unique variance.
+    
+    Segregation index = sum(unique variances) / R2_full
+    Values near 0: Low segregation (mostly shared variance)
+    Values near 1: High segregation (mostly unique variance)
+    
+    Parameters:
+    -----------
+    R2_full : array of shape (n_voxels,)
+        Test R2 scores from full model
+    R2_unique_dict : dict
+        Keys are space names, values are unique variance arrays
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    segregation_index : array of shape (n_voxels,)
+        Segregation index per voxel (0 to 1+, can exceed 1 due to negative unique)
+    """
+    logger.info("Computing segregation index...")
+    sum_unique = np.sum([v for v in R2_unique_dict.values()], axis=0)
+    segregation_index = sum_unique / (R2_full + 1e-10)
+    mean_seg = segregation_index.mean()
+    median_seg = np.median(segregation_index)
+    pct_low_seg = (segregation_index < 0.3).sum() / len(segregation_index) * 100
+    pct_high_seg = (segregation_index > 0.7).sum() / len(segregation_index) * 100
+    logger.info(f"  Mean segregation index: {mean_seg:.6f}")
+    logger.info(f"  Median segregation index: {median_seg:.6f}")
+    logger.info(f"  % voxels with low segregation (<0.3): {pct_low_seg:.1f}%")
+    logger.info(f"  % voxels with high segregation (>0.7): {pct_high_seg:.1f}%")
+
+    return segregation_index
+
+
 def compute_product_measure(model_full, X_test_list, Y_test, space_names_ordered, logger):
     """
     Compute product measure for each feature space from joint model.
