@@ -356,13 +356,13 @@ def compute_shared_variance(R2_full, R2_unique_dict, logger):
     return R2_shared
 
 
-def compute_segregation_index(R2_full, R2_unique_dict, logger):
+def compute_integration_index(R2_full, R2_unique_dict, logger):
     """
-    Compute segregation index as proportion of unique variance.
+    Compute integration index as proportion of shared variance.
     
-    Segregation index = sum(unique variances) / R2_full
-    Values near 0: Low segregation (mostly shared variance)
-    Values near 1: High segregation (mostly unique variance)
+    Integration index = R2_shared / R2_full = 1 - (sum(unique) / R2_full)
+    Values near 0: Low integration (mostly unique/segregated variance)
+    Values near 1: High integration (mostly shared/inseparable variance)
     
     Parameters:
     -----------
@@ -374,22 +374,37 @@ def compute_segregation_index(R2_full, R2_unique_dict, logger):
         
     Returns:
     --------
-    segregation_index : array of shape (n_voxels,)
-        Segregation index per voxel (0 to 1+, can exceed 1 due to negative unique)
+    integration_index : array of shape (n_voxels,)
+        Integration index per voxel (0 to 1, NaN for low R2 voxels)
     """
-    logger.info("Computing segregation index...")
+    logger.info("Computing integration index...")
     sum_unique = np.sum([v for v in R2_unique_dict.values()], axis=0)
-    segregation_index = sum_unique / (R2_full + 1e-10)
-    mean_seg = segregation_index.mean()
-    median_seg = np.median(segregation_index)
-    pct_low_seg = (segregation_index < 0.3).sum() / len(segregation_index) * 100
-    pct_high_seg = (segregation_index > 0.7).sum() / len(segregation_index) * 100
-    logger.info(f"  Mean segregation index: {mean_seg:.6f}")
-    logger.info(f"  Median segregation index: {median_seg:.6f}")
-    logger.info(f"  % voxels with low segregation (<0.3): {pct_low_seg:.1f}%")
-    logger.info(f"  % voxels with high segregation (>0.7): {pct_high_seg:.1f}%")
+    
+    # Only compute for voxels with meaningful R2
+    r2_threshold = 0.1
+    valid_mask = R2_full > r2_threshold
+    
+    # Initialize with NaN
+    integration_index = np.full_like(R2_full, np.nan)
+    integration_index[valid_mask] = 1.0 - (sum_unique[valid_mask] / R2_full[valid_mask])
+    
+    # Compute statistics only on valid voxels
+    valid_int = integration_index[~np.isnan(integration_index)]
+    mean_int = np.nanmean(integration_index)
+    median_int = np.nanmedian(integration_index)
+    pct_low_int = (valid_int < 0.3).sum() / len(valid_int) * 100
+    pct_high_int = (valid_int > 0.7).sum() / len(valid_int) * 100
+    n_excluded = (~valid_mask).sum()
+    
+    logger.info(f"  R2 threshold for integration: {r2_threshold}")
+    logger.info(f"  Voxels excluded (R2 <= {r2_threshold}): {n_excluded}/{len(R2_full)} ({100*n_excluded/len(R2_full):.1f}%)")
+    logger.info(f"  Mean integration index: {mean_int:.6f}")
+    logger.info(f"  Median integration index: {median_int:.6f}")
+    logger.info(f"  % voxels with low integration (<0.3): {pct_low_int:.1f}%")
+    logger.info(f"  % voxels with high integration (>0.7): {pct_high_int:.1f}%")
+    
+    return integration_index
 
-    return segregation_index
 
 
 def compute_product_measure(model_full, X_test_list, Y_test, space_names_ordered, logger):
