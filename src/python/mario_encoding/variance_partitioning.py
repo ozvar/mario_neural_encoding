@@ -612,3 +612,134 @@ def validate_product_measure(product_measures, R2_full, logger):
         
         if pct_negative > 80:
             logger.warning(f"      >80% negative may indicate this space is primarily used for orthogonalization")
+
+
+# ============================================================================
+# WEIGHT EXTRACTION FUNCTIONS
+# ============================================================================
+
+def extract_model_weights(model, logger):
+    """
+    Extract prediction weights from fitted GroupRidgeCV model.
+    
+    Parameters:
+    -----------
+    model : fitted GroupRidgeCV
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    weights : array of shape (n_features_total, n_voxels)
+        Prediction weights (coefficients) from the model
+    """
+    logger.info("Extracting weights from model...")
+    
+    if not hasattr(model, 'coef_'):
+        raise AttributeError("Model does not have coef_ attribute. Was it fitted?")
+    
+    weights = model.coef_
+    
+    # Convert to numpy if needed (torch tensor)
+    if hasattr(weights, 'cpu'):
+        weights = weights.cpu().numpy()
+    elif hasattr(weights, 'to_numpy'):
+        weights = weights.to_numpy()
+    
+    logger.info(f"  Weight shape: {weights.shape}")
+    logger.info(f"  Weight dtype: {weights.dtype}")
+    logger.info(f"  Weight range: [{weights.min():.6f}, {weights.max():.6f}]")
+    
+    return weights
+
+
+def decompose_weights_by_feature_space(weights, space_to_indices_delayed, space_names_ordered, 
+                                       n_delays, logger):
+    """
+    Decompose full weight matrix into per-space weights.
+    
+    Parameters:
+    -----------
+    weights : array of shape (n_features_delayed, n_voxels)
+        Full weight matrix from model
+    space_to_indices_delayed : dict
+        Keys are space names, values are arrays of indices in delayed feature matrix
+    space_names_ordered : list of str
+        Ordered list of feature space names
+    n_delays : int
+        Number of FIR delays
+    logger : logging.Logger
+        
+    Returns:
+    --------
+    weights_by_space : dict
+        Keys are space names, values are dicts with:
+        - 'weights_all_delays': array (n_space_features_delayed, n_voxels)
+        - 'weights_per_delay': array (n_delays, n_space_features, n_voxels)
+        - 'weights_avg': array (n_space_features, n_voxels) - averaged across delays
+    """
+    logger.info("Decomposing weights by feature space...")
+    
+    weights_by_space = {}
+    
+    for space_name in space_names_ordered:
+        indices = space_to_indices_delayed[space_name]
+        n_features = len(indices) // n_delays
+        n_voxels = weights.shape[1]
+        
+        # Extract this space's weights
+        space_weights = weights[indices, :]
+        
+        # Reshape to (n_delays, n_features, n_voxels)
+        space_weights_per_delay = space_weights.reshape(n_delays, n_features, n_voxels)
+        
+        # Average across delays
+        space_weights_avg = space_weights_per_delay.mean(axis=0)
+        
+        weights_by_space[space_name] = {
+            'weights_all_delays': space_weights,
+            'weights_per_delay': space_weights_per_delay,
+            'weights_avg': space_weights_avg
+        }
+        
+        logger.info(f"  {space_name}:")
+        logger.info(f"    Features: {n_features}")
+        logger.info(f"    Weights shape (all delays): {space_weights.shape}")
+        logger.info(f"    Weights shape (averaged): {space_weights_avg.shape}")
+    
+    return weights_by_space
+
+
+def save_model_weights(weights_full, weights_by_space, space_names_ordered, 
+                       output_dir, model_name, logger):
+    """
+    Save model weights to disk.
+    
+    Parameters:
+    -----------
+    weights_full : array of shape (n_features_delayed, n_voxels)
+        Full weight matrix
+    weights_by_space : dict
+        Per-space weights from decompose_weights_by_feature_space()
+    space_names_ordered : list of str
+    output_dir : Path
+    model_name : str
+        Name identifier (e.g., 'full', 'no_motor')
+    logger : logging.Logger
+    """
+    logger.info(f"Saving {model_name} model weights...")
+    
+    # Save full weights
+    weights_file = output_dir / f'weights_{model_name}.npz'
+    
+    save_dict = {'weights_full': weights_full}
+    
+    # Add per-space decomposed weights
+    for space_name in space_names_ordered:
+        save_dict[f'{space_name}_weights_avg'] = weights_by_space[space_name]['weights_avg']
+        save_dict[f'{space_name}_weights_per_delay'] = weights_by_space[space_name]['weights_per_delay']
+    
+    np.savez_compressed(weights_file, **save_dict)
+    
+    file_size_mb = weights_file.stat().st_size / (1024**2)
+    logger.info(f"  Saved to: {weights_file}")
+    logger.info(f"  File size: {file_size_mb:.1f} MB")

@@ -44,7 +44,10 @@ from mario_encoding.variance_partitioning import (
     compute_unique_variance,
     compute_shared_variance,
     compute_segregation_index,
-    validate_variance_partition
+    validate_variance_partition,
+    extract_model_weights,
+    decompose_weights_by_feature_space,
+    save_model_weights
 )
 
 
@@ -94,10 +97,14 @@ def get_output_directory(subject, train_sessions, test_sessions, experiment_id, 
 
 def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test, 
                                     space_names_ordered, run_onsets_train,
+                                    space_to_indices_delayed, n_delays,
                                     params, backend, output_dir, 
                                     compute_product_measure, compute_unique_variance, logger):
     """
     Fit models and compute variance decomposition metrics.
+    
+    Extracts and saves weights immediately after fitting each model.
+    Does NOT save full model objects to conserve memory and disk space.
     
     Always fits full model. Optionally computes:
     - Product measure (1 model, fast)
@@ -114,6 +121,10 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     space_names_ordered : list of str
         Feature space names in order
     run_onsets_train : array
+    space_to_indices_delayed : dict
+        Keys are space names, values are arrays of indices in delayed feature matrix
+    n_delays : int
+        Number of FIR delays
     params : dict
         Variance partitioning parameters from config
     backend : str
@@ -175,17 +186,27 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         
         validate_product_measure(results['product_measure'], results['R2_full'], logger)
     
-    # Save full model
-    model_path = output_dir / 'model_full.pkl'
-    logger.info(f"Saving full model to {model_path}...")
-    with open(model_path, 'wb') as f:
-        pickle.dump(model_full, f)
-    logger.info("  Saved [OK]")
+    # ========================================================================
+    # EXTRACT AND SAVE WEIGHTS (instead of saving full model)
+    # ========================================================================
+    logger.info("")
+    logger.info("="*80)
+    logger.info("EXTRACTING WEIGHTS FROM FULL MODEL")
+    logger.info("="*80)
     
-    # Delete to free memory
+    weights_full = extract_model_weights(model_full, logger)
+    weights_by_space = decompose_weights_by_feature_space(
+        weights_full, space_to_indices_delayed, space_names_ordered, n_delays, logger
+    )
+    save_model_weights(
+        weights_full, weights_by_space, space_names_ordered,
+        output_dir, 'full', logger
+    )
+    
+    # Delete model to free memory
     del model_full
     gc.collect()
-    logger.info("  Freed memory [OK]")
+    logger.info("  Freed model memory [OK]")
     
     # ========================================================================
     # FIT RESTRICTED MODELS (if unique variance requested)
@@ -234,17 +255,25 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
             logger.info(f"  Mean unique R2 for {space_name}: {R2_unique.mean():.6f}")
             logger.info(f"  % voxels with positive unique R2: {(R2_unique > 0).sum() / len(R2_unique) * 100:.1f}%")
             
-            # Save model
-            model_path = output_dir / f'model_no_{space_name}.pkl'
-            logger.info(f"Saving restricted model to {model_path}...")
-            with open(model_path, 'wb') as f:
-                pickle.dump(model_restricted, f)
-            logger.info("  Saved [OK]")
+            # ================================================================
+            # EXTRACT AND SAVE WEIGHTS (instead of saving full model)
+            # ================================================================
+            logger.info("")
+            logger.info(f"Extracting weights from restricted model (no {space_name})...")
+            
+            weights_restricted = extract_model_weights(model_restricted, logger)
+            weights_by_space_restricted = decompose_weights_by_feature_space(
+                weights_restricted, space_to_indices_delayed, space_names_ordered, n_delays, logger
+            )
+            save_model_weights(
+                weights_restricted, weights_by_space_restricted, space_names_ordered,
+                output_dir, f'no_{space_name}', logger
+            )
             
             # Clean up
             del model_restricted
             gc.collect()
-            logger.info("  Freed memory [OK]")
+            logger.info("  Freed model memory [OK]")
     else:
         logger.info("")
         logger.info("="*80)
@@ -373,7 +402,7 @@ def save_results(subject, train_sessions, test_sessions, results,
     logger.info("")
     logger.info("RESULTS SUMMARY:")
     logger.info(f"  Output directory: {output_dir}")
-    logger.info(f"  Models saved: model_full.pkl + 5 restricted models")
+    logger.info(f"  Weights saved: weights_full.npz + {len(results['R2_restricted'])} restricted weight files")
     logger.info(f"  R2 scores: R2_scores.npz")
     logger.info(f"  Metadata: metadata.json")
     logger.info(f"  Voxel mask: valid_voxels_mask.npy")
@@ -650,6 +679,7 @@ def main():
     results = fit_and_save_models_sequentially(
         X_train_list, Y_train, X_test_list, Y_test,
         space_names_ordered, run_onsets_train,
+        space_to_indices_delayed, len(delays),
         params, backend, output_dir,
         args.compute_product_measure, args.compute_unique_variance, logger
     )
