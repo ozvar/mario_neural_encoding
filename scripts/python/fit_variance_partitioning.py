@@ -43,7 +43,7 @@ from mario_encoding.variance_partitioning import (
     fit_restricted_model,
     compute_unique_variance,
     compute_shared_variance,
-    compute_segregation_index,
+    compute_integration_index,
     validate_variance_partition,
     extract_model_weights,
     decompose_weights_by_feature_space,
@@ -259,16 +259,7 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
             # EXTRACT AND SAVE WEIGHTS (instead of saving full model)
             # ================================================================
             logger.info("")
-            logger.info(f"Extracting weights from restricted model (no {space_name})...")
-            
-            weights_restricted = extract_model_weights(model_restricted, logger)
-            weights_by_space_restricted = decompose_weights_by_feature_space(
-                weights_restricted, space_to_indices_delayed, space_names_ordered, n_delays, logger
-            )
-            save_model_weights(
-                weights_restricted, weights_by_space_restricted, space_names_ordered,
-                output_dir, f'no_{space_name}', logger
-            )
+            logger.info(f"  Skipping weight extraction for restricted model (not needed)")
             
             # Clean up
             del model_restricted
@@ -337,14 +328,14 @@ def save_results(subject, train_sessions, test_sessions, results,
             save_dict[f'fisher_z_R2_no_{space_name}'] = fisher_z_restricted
             save_dict[f'fisher_z_R2_unique_{space_name}'] = fisher_z_unique
         
-        # Compute shared variance and segregation index
+        # Compute shared variance and integration index
         logger.info("")
 
         R2_shared = compute_shared_variance(results['R2_full'], results['R2_unique'], logger)
-        segregation_index = compute_segregation_index(results['R2_full'], results['R2_unique'], logger)
+        integration_index = compute_integration_index(results['R2_full'], results['R2_unique'], logger)
         
         save_dict['R2_shared'] = R2_shared
-        save_dict['segregation_index'] = segregation_index
+        save_dict['integration_index'] = integration_index
         
         # Fisher z for shared variance
         fisher_z_shared = fisher_z_transform(R2_shared)
@@ -402,7 +393,7 @@ def save_results(subject, train_sessions, test_sessions, results,
     logger.info("")
     logger.info("RESULTS SUMMARY:")
     logger.info(f"  Output directory: {output_dir}")
-    logger.info(f"  Weights saved: weights_full.npz + {len(results['R2_restricted'])} restricted weight files")
+    logger.info(f"  Weights saved: weights_full.npz")
     logger.info(f"  R2 scores: R2_scores.npz")
     logger.info(f"  Metadata: metadata.json")
     logger.info(f"  Voxel mask: valid_voxels_mask.npy")
