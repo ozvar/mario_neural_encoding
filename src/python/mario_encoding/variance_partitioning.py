@@ -181,7 +181,7 @@ def create_feature_space_arrays(X_delayed, space_to_indices_delayed, feature_spa
     return X_list, space_names_ordered
 
 
-def fit_full_model(X_train_list, Y_train, run_onsets_train, params, backend, logger):
+def fit_full_model(X_train_list, Y_train, cv_onsets, params, backend, logger):
     """
     Fit full GroupRidgeCV model with all feature spaces.
     
@@ -190,7 +190,8 @@ def fit_full_model(X_train_list, Y_train, run_onsets_train, params, backend, log
     X_train_list : list of arrays
         One array per feature space
     Y_train : array of shape (n_samples, n_voxels)
-    run_onsets_train : array of int
+    cv_onsets : array of int
+        CV fold boundaries (run or session onsets)
     params : dict
         'solver', 'solver_params' from config
     backend : str
@@ -204,9 +205,9 @@ def fit_full_model(X_train_list, Y_train, run_onsets_train, params, backend, log
     logger.info("Fitting full model with all feature spaces...")
     
     # Create CV splitter
-    cv = generate_leave_one_run_out(Y_train.shape[0], run_onsets_train)
+    cv = generate_leave_one_run_out(Y_train.shape[0], cv_onsets)
     cv = check_cv(cv)
-    logger.info(f"  Using leave-one-run-out CV with {cv.get_n_splits()} folds")
+    logger.info(f"  Using CV with {cv.get_n_splits()} folds")
     
     # Create model
     model = GroupRidgeCV(
@@ -231,7 +232,7 @@ def fit_full_model(X_train_list, Y_train, run_onsets_train, params, backend, log
 
 
 def fit_restricted_model(X_train_list, Y_train, excluded_space_name, space_names_ordered, 
-                        run_onsets_train, params, backend, logger):
+                        cv_onsets, params, backend, logger):
     """
     Fit GroupRidgeCV model excluding one feature space.
     
@@ -244,7 +245,8 @@ def fit_restricted_model(X_train_list, Y_train, excluded_space_name, space_names
         Name of feature space to exclude
     space_names_ordered : list of str
         Ordered list of space names (to find index to exclude)
-    run_onsets_train : array of int
+    cv_onsets : array of int
+        CV fold boundaries (run or session onsets)
     params : dict
     backend : str
     logger : logging.Logger
@@ -266,7 +268,7 @@ def fit_restricted_model(X_train_list, Y_train, excluded_space_name, space_names
     logger.info(f"  Total features: {sum(x.shape[1] for x in X_train_restricted)}")
     
     # Create CV splitter
-    cv = generate_leave_one_run_out(Y_train.shape[0], run_onsets_train)
+    cv = generate_leave_one_run_out(Y_train.shape[0], cv_onsets)
     cv = check_cv(cv)
     
     # Create and fit model
@@ -360,9 +362,9 @@ def compute_integration_index(R2_full, R2_unique_dict, logger):
     """
     Compute integration index as proportion of shared variance.
     
-    Integration index = R2_shared / R2_full = 1 - (sum(unique) / R2_full)
-    Values near 0: Low integration (mostly unique/segregated variance)
-    Values near 1: High integration (mostly shared/inseparable variance)
+    Integration index = 1 - sum(unique variances) / R2_full = shared / R2_full
+    Values near 0: Low integration (mostly unique variance)
+    Values near 1: High integration (mostly shared variance)
     
     Parameters:
     -----------
@@ -375,36 +377,21 @@ def compute_integration_index(R2_full, R2_unique_dict, logger):
     Returns:
     --------
     integration_index : array of shape (n_voxels,)
-        Integration index per voxel (0 to 1, NaN for low R2 voxels)
+        Integration index per voxel (0 to 1+)
     """
     logger.info("Computing integration index...")
     sum_unique = np.sum([v for v in R2_unique_dict.values()], axis=0)
-    
-    # Only compute for voxels with meaningful R2
-    r2_threshold = 0.1
-    valid_mask = R2_full > r2_threshold
-    
-    # Initialize with NaN
-    integration_index = np.full_like(R2_full, np.nan)
-    integration_index[valid_mask] = 1.0 - (sum_unique[valid_mask] / R2_full[valid_mask])
-    
-    # Compute statistics only on valid voxels
-    valid_int = integration_index[~np.isnan(integration_index)]
-    mean_int = np.nanmean(integration_index)
-    median_int = np.nanmedian(integration_index)
-    pct_low_int = (valid_int < 0.3).sum() / len(valid_int) * 100
-    pct_high_int = (valid_int > 0.7).sum() / len(valid_int) * 100
-    n_excluded = (~valid_mask).sum()
-    
-    logger.info(f"  R2 threshold for integration: {r2_threshold}")
-    logger.info(f"  Voxels excluded (R2 <= {r2_threshold}): {n_excluded}/{len(R2_full)} ({100*n_excluded/len(R2_full):.1f}%)")
+    integration_index = 1 - (sum_unique / (R2_full + 1e-10))
+    mean_int = integration_index.mean()
+    median_int = np.median(integration_index)
+    pct_low_int = (integration_index < 0.3).sum() / len(integration_index) * 100
+    pct_high_int = (integration_index > 0.7).sum() / len(integration_index) * 100
     logger.info(f"  Mean integration index: {mean_int:.6f}")
     logger.info(f"  Median integration index: {median_int:.6f}")
     logger.info(f"  % voxels with low integration (<0.3): {pct_low_int:.1f}%")
     logger.info(f"  % voxels with high integration (>0.7): {pct_high_int:.1f}%")
-    
-    return integration_index
 
+    return integration_index
 
 
 def compute_product_measure(model_full, X_test_list, Y_test, space_names_ordered, logger):

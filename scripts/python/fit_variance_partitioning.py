@@ -96,7 +96,7 @@ def get_output_directory(subject, train_sessions, test_sessions, experiment_id, 
 
 
 def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test, 
-                                    space_names_ordered, run_onsets_train,
+                                    space_names_ordered, cv_onsets_train,
                                     space_to_indices_delayed, n_delays,
                                     params, backend, output_dir, 
                                     compute_product_measure, compute_unique_variance, logger):
@@ -120,7 +120,8 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     Y_test : array
     space_names_ordered : list of str
         Feature space names in order
-    run_onsets_train : array
+    cv_onsets_train : array
+        CV fold boundaries (either run or session onsets depending on scheme)
     space_to_indices_delayed : dict
         Keys are space names, values are arrays of indices in delayed feature matrix
     n_delays : int
@@ -154,7 +155,7 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     logger.info("="*80)
     
     model_full = fit_full_model(
-        X_train_list, Y_train, run_onsets_train, params, backend, logger
+        X_train_list, Y_train, cv_onsets_train, params, backend, logger
     )
     
     # Score on test set
@@ -233,7 +234,7 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
             # Fit restricted model
             model_restricted = fit_restricted_model(
                 X_train_list, Y_train, space_name, space_names_ordered,
-                run_onsets_train, params, backend, logger
+                cv_onsets_train, params, backend, logger
             )
             
             # Score on test set
@@ -258,7 +259,6 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
             # ================================================================
             # EXTRACT AND SAVE WEIGHTS (instead of saving full model)
             # ================================================================
-            logger.info("")
             logger.info(f"  Skipping weight extraction for restricted model (not needed)")
             
             # Clean up
@@ -332,10 +332,10 @@ def save_results(subject, train_sessions, test_sessions, results,
         logger.info("")
 
         R2_shared = compute_shared_variance(results['R2_full'], results['R2_unique'], logger)
-        integration_index = compute_integration_index(results['R2_full'], results['R2_unique'], logger)
+        #integration_index = compute_integration_index(results['R2_full'], results['R2_unique'], logger)
         
         save_dict['R2_shared'] = R2_shared
-        save_dict['integration_index'] = integration_index
+        #save_dict['integration_index'] = integration_index
         
         # Fisher z for shared variance
         fisher_z_shared = fisher_z_transform(R2_shared)
@@ -393,7 +393,7 @@ def save_results(subject, train_sessions, test_sessions, results,
     logger.info("")
     logger.info("RESULTS SUMMARY:")
     logger.info(f"  Output directory: {output_dir}")
-    logger.info(f"  Weights saved: weights_full.npz")
+    logger.info(f"  Weights saved: weights_full.npz + {len(results['R2_restricted'])} restricted weight files")
     logger.info(f"  R2 scores: R2_scores.npz")
     logger.info(f"  Metadata: metadata.json")
     logger.info(f"  Voxel mask: valid_voxels_mask.npy")
@@ -416,6 +416,9 @@ def main():
                        help='Session(s) to use as held-out test set')
     parser.add_argument('--backend', default='torch_cuda', choices=['torch_cuda', 'numpy', 'cupy'],
                        help='Himalaya computational backend')
+    parser.add_argument('--cv-scheme', type=str, default='loro',
+                       choices=['loro', 'loso'],
+                       help='Cross-validation scheme: loro (leave-one-run-out) or loso (leave-one-session-out)')
     parser.add_argument('--skip-baseline-filtering', action='store_true',
                        help='Skip baseline/ITI filtering (use all TRs)')
     parser.add_argument('--compute-product-measure', action='store_true', default=True,
@@ -509,19 +512,37 @@ def main():
     logger.info("="*80)
     
     logger.info("Loading training data...")
-    X_train, Y_train, run_onsets_train, level_onsets_train, feature_names = concatenate_sessions_with_names(
+    X_train, Y_train, run_onsets_train, session_onsets_train, level_onsets_train, feature_names = concatenate_sessions_with_names(
         args.subject, train_sessions, PATHS['practice_phase_metadata'],
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
     
     logger.info("Loading test data...")
-    X_test, Y_test, run_onsets_test, level_onsets_test, feature_names_test_original = concatenate_sessions_with_names(
+    X_test, Y_test, run_onsets_test, session_onsets_test, level_onsets_test, feature_names_test_original = concatenate_sessions_with_names(
         args.subject, test_sessions, PATHS['practice_phase_metadata'],
         PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
     )
     
     if feature_names != feature_names_test_original:
         raise ValueError("Train and test data have different features before selection!")
+
+    # ========================================================================
+    # SELECT CV SCHEME
+    # ========================================================================
+    logger.info("")
+    logger.info("="*80)
+    logger.info("CROSS-VALIDATION SCHEME")
+    logger.info("="*80)
+    
+    if args.cv_scheme == 'loro':
+        cv_onsets_train = run_onsets_train
+        logger.info(f"Using LORO (Leave-One-Run-Out) CV")
+        logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
+    elif args.cv_scheme == 'loso':
+        cv_onsets_train = session_onsets_train
+        logger.info(f"Using LOSO (Leave-One-Session-Out) CV")
+        logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
+        logger.info(f"  Training sessions: {train_sessions}")
 
     # ========================================================================
     # SELECT FEATURES ACCORDING TO CONFIG
@@ -669,7 +690,7 @@ def main():
     
     results = fit_and_save_models_sequentially(
         X_train_list, Y_train, X_test_list, Y_test,
-        space_names_ordered, run_onsets_train,
+        space_names_ordered, cv_onsets_train,
         space_to_indices_delayed, len(delays),
         params, backend, output_dir,
         args.compute_product_measure, args.compute_unique_variance, logger

@@ -214,6 +214,7 @@ def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, d
     X : array of shape (n_samples_total, n_features)
     Y : array of shape (n_samples_total, n_grayordinates)
     run_onsets : array of int
+    session_onsets : array of int
     level_onsets : array of int
     feature_names : list of str
         Features in FILE order from first session (source of truth)
@@ -221,6 +222,7 @@ def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, d
     X_list = []
     Y_list = []
     run_onsets_list = [0]
+    session_onsets_list = [0]
     level_onsets_list = [0]
     cumulative_samples = 0
     feature_names = None
@@ -253,18 +255,21 @@ def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, d
         level_onsets_list.extend(level_onsets_sess[1:].tolist())
         
         cumulative_samples += metadata['n_samples']
+        session_onsets_list.append(cumulative_samples)
     
     X = np.vstack(X_list)
     Y = np.vstack(Y_list)
     run_onsets = np.array(run_onsets_list)
+    session_onsets = np.array(session_onsets_list[:-1])  # Remove last (beyond data)
     level_onsets = np.array(level_onsets_list)
     
     logger.info(f"Concatenated {len(sessions)} sessions:")
     logger.info(f"  Total samples: {X.shape[0]}")
     logger.info(f"  Total runs: {len(run_onsets)}")
+    logger.info(f"  Total sessions: {len(session_onsets)}")
     logger.info(f"  Total levels: {len(level_onsets)}")
     
-    return X, Y, run_onsets, level_onsets, feature_names
+    return X, Y, run_onsets, session_onsets, level_onsets, feature_names
 
 
 def preprocess_data(X, Y, run_onsets, level_onsets, logger):
