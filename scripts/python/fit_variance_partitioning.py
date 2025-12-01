@@ -99,12 +99,13 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
                                     space_names_ordered, cv_onsets_train,
                                     space_to_indices_delayed, n_delays,
                                     params, backend, output_dir, 
-                                    compute_product_measure, compute_unique_variance, logger):
+                                    compute_product_measure, compute_unique_variance,
+                                    save_model, logger):
     """
     Fit models and compute variance decomposition metrics.
     
     Extracts and saves weights immediately after fitting each model.
-    Does NOT save full model objects to conserve memory and disk space.
+    Optionally saves full model objects if save_model=True (for permutation testing).
     
     Always fits full model. Optionally computes:
     - Product measure (1 model, fast)
@@ -134,6 +135,8 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         Whether to compute product measure decomposition
     compute_unique_variance : bool
         Whether to fit restricted models and compute unique variance
+    save_model : bool
+        Whether to save full model object (WARNING: large files)
     logger : logging.Logger
         
     Returns:
@@ -188,7 +191,7 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         validate_product_measure(results['product_measure'], results['R2_full'], logger)
     
     # ========================================================================
-    # EXTRACT AND SAVE WEIGHTS (instead of saving full model)
+    # EXTRACT AND SAVE WEIGHTS
     # ========================================================================
     logger.info("")
     logger.info("="*80)
@@ -203,6 +206,22 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         weights_full, weights_by_space, space_names_ordered,
         output_dir, 'full', logger
     )
+    
+    # ========================================================================
+    # OPTIONALLY SAVE FULL MODEL (for permutation testing)
+    # ========================================================================
+    if save_model:
+        logger.info("")
+        logger.info("="*80)
+        logger.info("SAVING FULL MODEL")
+        logger.info("="*80)
+        logger.warning("WARNING: Model files are very large (~100GB)")
+        
+        model_path = output_dir / 'model_full.pkl'
+        logger.info(f"Saving model to: {model_path}")
+        with open(model_path, 'wb') as f:
+            pickle.dump(model_full, f)
+        logger.info("  Saved [OK]")
     
     # Delete model to free memory
     del model_full
@@ -256,9 +275,6 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
             logger.info(f"  Mean unique R2 for {space_name}: {R2_unique.mean():.6f}")
             logger.info(f"  % voxels with positive unique R2: {(R2_unique > 0).sum() / len(R2_unique) * 100:.1f}%")
             
-            # ================================================================
-            # EXTRACT AND SAVE WEIGHTS (instead of saving full model)
-            # ================================================================
             logger.info(f"  Skipping weight extraction for restricted model (not needed)")
             
             # Clean up
@@ -332,10 +348,8 @@ def save_results(subject, train_sessions, test_sessions, results,
         logger.info("")
 
         R2_shared = compute_shared_variance(results['R2_full'], results['R2_unique'], logger)
-        #integration_index = compute_integration_index(results['R2_full'], results['R2_unique'], logger)
         
         save_dict['R2_shared'] = R2_shared
-        #save_dict['integration_index'] = integration_index
         
         # Fisher z for shared variance
         fisher_z_shared = fisher_z_transform(R2_shared)
@@ -355,6 +369,12 @@ def save_results(subject, train_sessions, test_sessions, results,
     voxel_mask_file = output_dir / 'valid_voxels_mask.npy'
     logger.info(f"Saving voxel mask to {voxel_mask_file}...")
     np.save(voxel_mask_file, valid_voxels_mask)
+    logger.info("  Saved [OK]")
+    
+    # Save feature mask (for permutation testing)
+    features_mask_file = output_dir / 'valid_features_mask.npy'
+    logger.info(f"Saving features mask to {features_mask_file}...")
+    np.save(features_mask_file, valid_features_mask)
     logger.info("  Saved [OK]")
     
     # Save metadata
@@ -382,7 +402,9 @@ def save_results(subject, train_sessions, test_sessions, results,
             name: len(features) for name, features in feature_spaces_filtered.items()
         },
         'original_feature_names': feature_names,
-        'kept_feature_names': [name for name, keep in zip(feature_names, valid_features_mask) if keep]
+        'kept_feature_names': [name for name, keep in zip(feature_names, valid_features_mask) if keep],
+        'delays': PARAMETERS['variance_partitioning']['delays'],
+        'feature_spaces_filtered': feature_spaces_filtered
     }
     
     with open(metadata_file, 'w') as f:
@@ -393,10 +415,11 @@ def save_results(subject, train_sessions, test_sessions, results,
     logger.info("")
     logger.info("RESULTS SUMMARY:")
     logger.info(f"  Output directory: {output_dir}")
-    logger.info(f"  Weights saved: weights_full.npz + {len(results['R2_restricted'])} restricted weight files")
+    logger.info(f"  Weights saved: weights_full.npz")
     logger.info(f"  R2 scores: R2_scores.npz")
     logger.info(f"  Metadata: metadata.json")
     logger.info(f"  Voxel mask: valid_voxels_mask.npy")
+    logger.info(f"  Features mask: valid_features_mask.npy")
 
 
 def main():
@@ -431,6 +454,8 @@ def main():
     parser.add_argument('--no-compute-unique-variance', action='store_false',
                        dest='compute_unique_variance',
                        help='Skip unique variance computation (default)')
+    parser.add_argument('--save-model', action='store_true', default=False,
+                       help='Save full model for permutation testing (WARNING: large files ~100GB)')
     
     args = parser.parse_args()
     
@@ -462,6 +487,7 @@ def main():
     logger.info(f"Feature spaces: {list(FEATURE_SPACES.keys())}")
     logger.info(f"Compute product measure: {args.compute_product_measure}")
     logger.info(f"Compute unique variance: {args.compute_unique_variance}")
+    logger.info(f"Save model: {args.save_model}")
     
     # Set backend
     backend = set_backend(args.backend, on_error="warn")
@@ -527,24 +553,6 @@ def main():
         raise ValueError("Train and test data have different features before selection!")
 
     # ========================================================================
-    # SELECT CV SCHEME
-    # ========================================================================
-    logger.info("")
-    logger.info("="*80)
-    logger.info("CROSS-VALIDATION SCHEME")
-    logger.info("="*80)
-    
-    if args.cv_scheme == 'loro':
-        cv_onsets_train = run_onsets_train
-        logger.info(f"Using LORO (Leave-One-Run-Out) CV")
-        logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
-    elif args.cv_scheme == 'loso':
-        cv_onsets_train = session_onsets_train
-        logger.info(f"Using LOSO (Leave-One-Session-Out) CV")
-        logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
-        logger.info(f"  Training sessions: {train_sessions}")
-
-    # ========================================================================
     # SELECT FEATURES ACCORDING TO CONFIG
     # ========================================================================
     logger.info("")
@@ -588,7 +596,24 @@ def main():
         logger.info("SKIPPING BASELINE FILTERING (using all TRs)")
         logger.info("="*80)
     
+    # ========================================================================
+    # SELECT CV SCHEME
+    # ========================================================================
+    logger.info("")
+    logger.info("="*80)
+    logger.info("CROSS-VALIDATION SCHEME")
+    logger.info("="*80)
     
+    if args.cv_scheme == 'loro':
+        cv_onsets_train = run_onsets_train
+        logger.info(f"Using LORO (Leave-One-Run-Out) CV")
+        logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
+    elif args.cv_scheme == 'loso':
+        cv_onsets_train = session_onsets_train
+        logger.info(f"Using LOSO (Leave-One-Session-Out) CV")
+        logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
+        logger.info(f"  Training sessions: {train_sessions}")
+
     # ========================================================================
     # FILTER ZERO-VARIANCE FEATURES AND VOXELS
     # ========================================================================
@@ -693,7 +718,8 @@ def main():
         space_names_ordered, cv_onsets_train,
         space_to_indices_delayed, len(delays),
         params, backend, output_dir,
-        args.compute_product_measure, args.compute_unique_variance, logger
+        args.compute_product_measure, args.compute_unique_variance,
+        args.save_model, logger
     )
     
     # ========================================================================
