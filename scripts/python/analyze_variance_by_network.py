@@ -9,15 +9,46 @@ Usage:
         --test-sessions 14 --experiment-id 20251121_210306 --r2-threshold 0.05
 """
 import argparse
-import sys
 from pathlib import Path
 
 import numpy as np
 import nibabel as nib
 
-# Add project source to path
-sys.path.insert(0, str(Path(__file__).parent.parent / 'src' / 'python'))
 from mario_encoding.config import PATHS
+
+
+def load_experiment_config(results_dir):
+    """
+    Load experiment configuration from config.json.
+    
+    Parameters
+    ----------
+    results_dir : Path
+        Directory containing config.json
+        
+    Returns
+    -------
+    config : dict
+        Experiment configuration
+    feature_space_names : list of str
+        Names of feature spaces in this experiment
+    """
+    import json
+    
+    config_path = results_dir / 'config.json'
+    if not config_path.exists():
+        raise FileNotFoundError(f"config.json not found at {config_path}")
+    
+    with open(config_path, 'r') as f:
+        config = json.load(f)
+    
+    # Extract feature space names
+    if 'feature_spaces' not in config:
+        raise KeyError("'feature_spaces' not found in config.json")
+    
+    feature_space_names = list(config['feature_spaces'].keys())
+    
+    return config, feature_space_names
 
 
 def load_yeo_networks(yeo_path):
@@ -53,7 +84,7 @@ def load_yeo_networks(yeo_path):
     return network_labels, network_names
 
 
-def load_variance_maps(results_dir, valid_voxels_mask):
+def load_variance_maps(results_dir, valid_voxels_mask, feature_space_names):
     """
     Load R² maps from variance partitioning results.
     
@@ -63,12 +94,13 @@ def load_variance_maps(results_dir, valid_voxels_mask):
         Directory containing R2_scores.npz
     valid_voxels_mask : np.ndarray (n_grayordinates,)
         Boolean mask of valid voxels
+    feature_space_names : list of str
+        Names of feature spaces from config (e.g., ['motor', 'scene', 'activity'])
         
     Returns
     -------
     variance_maps : dict
-        Dictionary with keys: 'R2_full', 'unique_motor', 'unique_perception', 
-        'unique_activity', 'shared'
+        Dictionary with keys: 'R2_full', 'unique_{space}', 'shared'
         Each value is np.ndarray (n_grayordinates,) with NaN for invalid voxels
     """
     # Load R² scores
@@ -82,35 +114,36 @@ def load_variance_maps(results_dir, valid_voxels_mask):
     n_grayordinates = len(valid_voxels_mask)
     variance_maps = {}
     
-    # Map to standardized keys
-    key_mapping = {
-        'R2_full': 'R2_full',
-        'unique_motor': 'R2_unique_motor',
-        'unique_perception': 'R2_unique_perception',
-        'unique_activity': 'R2_unique_activity'
-    }
+    # Load R2_full
+    if 'R2_full' not in data:
+        raise KeyError(f"R2_full not found in R2_scores.npz. Available keys: {list(data.keys())}")
     
-    # Load each variance component
-    for std_key, npz_key in key_mapping.items():
+    full_map = np.full(n_grayordinates, np.nan)
+    full_map[valid_voxels_mask] = data['R2_full']
+    variance_maps['R2_full'] = full_map
+    
+    # Load unique variance for each feature space
+    for space_name in feature_space_names:
+        npz_key = f'R2_unique_{space_name}'
         if npz_key not in data:
             raise KeyError(f"{npz_key} not found in R2_scores.npz. Available keys: {list(data.keys())}")
         
         full_map = np.full(n_grayordinates, np.nan)
         full_map[valid_voxels_mask] = data[npz_key]
-        variance_maps[std_key] = full_map
+        variance_maps[f'unique_{space_name}'] = full_map
     
-    # Compute shared variance
-    shared = (variance_maps['R2_full'] - 
-              variance_maps['unique_motor'] - 
-              variance_maps['unique_perception'] - 
-              variance_maps['unique_activity'])
-    variance_maps['shared'] = shared
+    # Compute shared variance: R2_full - sum(unique variances)
+    unique_sum = np.zeros(n_grayordinates)
+    for space_name in feature_space_names:
+        unique_sum += variance_maps[f'unique_{space_name}']
+    
+    variance_maps['shared'] = variance_maps['R2_full'] - unique_sum
     
     return variance_maps
 
 
 def compute_network_statistics(variance_maps, network_labels, network_names, 
-                               valid_voxels_mask, r2_threshold=0.05):
+                               valid_voxels_mask, feature_space_names, r2_threshold=0.05):
     """
     Compute mean and std of variance components per network.
     
@@ -124,6 +157,8 @@ def compute_network_statistics(variance_maps, network_labels, network_names,
         Names of networks
     valid_voxels_mask : np.ndarray
         Boolean mask of valid voxels
+    feature_space_names : list of str
+        Names of feature spaces in this experiment
     r2_threshold : float
         Minimum R²_full to include voxel in statistics
         
@@ -137,6 +172,9 @@ def compute_network_statistics(variance_maps, network_labels, network_names,
     # Get R²_full for thresholding
     r2_full = variance_maps['R2_full']
     
+    # Build list of variance types to compute
+    variance_types = ['R2_full'] + [f'unique_{space}' for space in feature_space_names] + ['shared']
+    
     for net_id, net_name in enumerate(network_names, start=1):
         # Get voxels in this network
         network_mask = (network_labels == net_id) & valid_voxels_mask
@@ -149,13 +187,12 @@ def compute_network_statistics(variance_maps, network_labels, network_names,
         
         if n_voxels == 0:
             # No voxels pass threshold in this network
-            for var_type in ['R2_full', 'unique_motor', 'unique_perception', 'unique_activity', 'shared']:
+            for var_type in variance_types:
                 stats[net_name][var_type] = {'mean': np.nan, 'std': np.nan}
-            stats[net_name]['shared_ratio'] = {'mean': np.nan, 'std': np.nan}
             continue
         
         # Compute statistics for each variance type
-        for var_type in ['R2_full', 'unique_motor', 'unique_perception', 'unique_activity', 'shared']:
+        for var_type in variance_types:
             values = variance_maps[var_type][network_mask_thresholded]
             # Remove NaN values if any slipped through
             values = values[~np.isnan(values)]
@@ -164,26 +201,11 @@ def compute_network_statistics(variance_maps, network_labels, network_names,
                 'mean': np.mean(values) if len(values) > 0 else np.nan,
                 'std': np.std(values) if len(values) > 0 else np.nan
             }
-        
-        # Compute shared ratio: shared / R2_full
-        r2_vals = variance_maps['R2_full'][network_mask_thresholded]
-        shared_vals = variance_maps['shared'][network_mask_thresholded]
-        
-        # Only compute ratio where R2_full > 0 to avoid division issues
-        valid_ratio_mask = r2_vals > 0
-        if valid_ratio_mask.sum() > 0:
-            ratio_vals = shared_vals[valid_ratio_mask] / r2_vals[valid_ratio_mask]
-            stats[net_name]['shared_ratio'] = {
-                'mean': np.mean(ratio_vals),
-                'std': np.std(ratio_vals)
-            }
-        else:
-            stats[net_name]['shared_ratio'] = {'mean': np.nan, 'std': np.nan}
     
     return stats
 
 
-def print_network_statistics(stats, network_names):
+def print_network_statistics(stats, network_names, feature_space_names):
     """
     Print formatted statistics table.
     
@@ -193,33 +215,51 @@ def print_network_statistics(stats, network_names):
         Network statistics from compute_network_statistics()
     network_names : list of str
         Names of networks in order
+    feature_space_names : list of str
+        Names of feature spaces in this experiment
     """
-    print("\n" + "="*100)
+    # Build header dynamically
+    n_spaces = len(feature_space_names)
+    # Base width: Network(20) + N_Voxels(12) + R²_Full(15) + Shared(15) = 62
+    # Add 15 per unique space
+    total_width = 62 + (n_spaces * 15)
+    
+    print("\n" + "="*total_width)
     print("VARIANCE DECOMPOSITION BY FUNCTIONAL NETWORK")
-    print("="*100)
+    print("="*total_width)
     print()
     
-    # Header
-    print(f"{'Network':<20} {'N Voxels':<12} {'R² Full':<15} {'Unique Motor':<15} "
-          f"{'Unique Percept':<15} {'Unique Activity':<15} {'Shared':<15} {'Shared Ratio':<15}")
-    print("-"*100)
+    # Build header
+    header = f"{'Network':<20} {'N Voxels':<12} {'R² Full':<15} "
+    for space_name in feature_space_names:
+        header += f"{'Unique ' + space_name.capitalize():<15} "
+    header += f"{'Shared':<15}"
+    print(header)
+    print("-"*total_width)
     
     # Print each network
     for net_name in network_names:
         n_vox = stats[net_name]['n_voxels']
         
-        # Format mean ± std
+        # Format R2_full
         r2_str = f"{stats[net_name]['R2_full']['mean']:.3f}±{stats[net_name]['R2_full']['std']:.3f}" if n_vox > 0 else "---"
-        motor_str = f"{stats[net_name]['unique_motor']['mean']:.3f}±{stats[net_name]['unique_motor']['std']:.3f}" if n_vox > 0 else "---"
-        percept_str = f"{stats[net_name]['unique_perception']['mean']:.3f}±{stats[net_name]['unique_perception']['std']:.3f}" if n_vox > 0 else "---"
-        activity_str = f"{stats[net_name]['unique_activity']['mean']:.3f}±{stats[net_name]['unique_activity']['std']:.3f}" if n_vox > 0 else "---"
-        shared_str = f"{stats[net_name]['shared']['mean']:.3f}±{stats[net_name]['shared']['std']:.3f}" if n_vox > 0 else "---"
-        ratio_str = f"{stats[net_name]['shared_ratio']['mean']:.3f}±{stats[net_name]['shared_ratio']['std']:.3f}" if n_vox > 0 else "---"
         
-        print(f"{net_name:<20} {n_vox:<12} {r2_str:<15} {motor_str:<15} {percept_str:<15} "
-              f"{activity_str:<15} {shared_str:<15} {ratio_str:<15}")
+        # Start building row
+        row = f"{net_name:<20} {n_vox:<12} {r2_str:<15} "
+        
+        # Add unique variance for each feature space
+        for space_name in feature_space_names:
+            var_key = f'unique_{space_name}'
+            var_str = f"{stats[net_name][var_key]['mean']:.3f}±{stats[net_name][var_key]['std']:.3f}" if n_vox > 0 else "---"
+            row += f"{var_str:<15} "
+        
+        # Add shared variance
+        shared_str = f"{stats[net_name]['shared']['mean']:.3f}±{stats[net_name]['shared']['std']:.3f}" if n_vox > 0 else "---"
+        row += f"{shared_str:<15}"
+        
+        print(row)
     
-    print("="*100)
+    print("="*total_width)
     print()
 
 
@@ -266,21 +306,27 @@ def main():
     
     args = parser.parse_args()
     
-    print("="*100)
+    # Get results directory
+    results_dir = get_results_directory(
+        args.subject, args.train_sessions, args.test_sessions, args.experiment_id
+    )
+    
+    # Load experiment config to get feature spaces
+    config, feature_space_names = load_experiment_config(results_dir)
+    
+    print("="*90)
     print("YEO NETWORK ANALYSIS")
-    print("="*100)
+    print("="*90)
     print(f"Subject: {args.subject}")
     print(f"Train sessions: {args.train_sessions}")
     print(f"Test sessions: {args.test_sessions}")
     print(f"Experiment ID: {args.experiment_id}")
+    print(f"Feature spaces: {feature_space_names}")
     print(f"R² threshold: {args.r2_threshold}")
     print()
     
     # Get results directory
     print("Loading data...")
-    results_dir = get_results_directory(
-        args.subject, args.train_sessions, args.test_sessions, args.experiment_id
-    )
     print(f"Results directory: {results_dir}")
     
     # Load valid voxels mask
@@ -298,18 +344,18 @@ def main():
     
     # Load variance maps
     print("Loading variance maps...")
-    variance_maps = load_variance_maps(results_dir, valid_voxels_mask)
+    variance_maps = load_variance_maps(results_dir, valid_voxels_mask, feature_space_names)
     print(f"Loaded maps: {list(variance_maps.keys())}")
     
     # Compute statistics per network
     print(f"Computing statistics (R² > {args.r2_threshold})...")
     stats = compute_network_statistics(
         variance_maps, network_labels, network_names, 
-        valid_voxels_mask, args.r2_threshold
+        valid_voxels_mask, feature_space_names, args.r2_threshold
     )
     
     # Print results
-    print_network_statistics(stats, network_names)
+    print_network_statistics(stats, network_names, feature_space_names)
     
     print("Analysis complete.")
 
