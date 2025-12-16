@@ -10,10 +10,10 @@ Output structure:
         group_average/
             {experiment_id}/
                 config.json
-                group_averages.npz
+                R2_scores.npz
                 group_metadata.json
-                group_R2_full_mean.dscalar.nii
-                group_R2_unique_motor_mean.dscalar.nii
+                group_R2_full.dscalar.nii
+                group_R2_unique_motor.dscalar.nii
                 ...
 """
 import argparse
@@ -27,6 +27,7 @@ import nibabel as nib
 from nibabel.cifti2 import Cifti2Header, Cifti2Image
 from nibabel.cifti2.cifti2_axes import ScalarAxis
 
+from mario_encoding import group_configs
 from mario_encoding.config import PATHS
 
 
@@ -301,9 +302,9 @@ def save_group_results(group_averages, output_dir, config, subjects_metadata, lo
         json.dump(config, f, indent=2)
     save_dict = {}
     for metric_name, data in group_averages.items():
-        save_dict[f'{metric_name}_mean'] = data['mean']
+        save_dict[f'{metric_name}'] = data['mean']
         save_dict[f'{metric_name}_n_valid'] = data['n_valid']
-    np.savez_compressed(output_dir / 'group_averages.npz', **save_dict)
+    np.savez_compressed(output_dir / 'R2_scores.npz', **save_dict)
     metadata = {
         'timestamp': datetime.now().isoformat(),
         'n_subjects': len(subjects_metadata),
@@ -340,11 +341,11 @@ def create_group_ciftis(group_averages, output_dir, template_cifti_path, logger)
     for metric_name, data in group_averages.items():
         mean_values = data['mean']
         cifti_data = mean_values[np.newaxis, :]
-        map_name = f'{metric_name}_mean'
+        map_name = f'{metric_name}'
         scalar_axis = ScalarAxis([map_name])
         new_header = Cifti2Header.from_axes((scalar_axis, brain_model_axis))
         new_cifti = Cifti2Image(cifti_data, header=new_header)
-        output_path = output_dir / f'group_{metric_name}_mean.dscalar.nii'
+        output_path = output_dir / f'group_{metric_name}.dscalar.nii'
         new_cifti.to_filename(str(output_path))
 
 
@@ -367,7 +368,6 @@ def main():
     parser.add_argument('--config', type=str, required=True,
                        help='Name of config from mario_encoding.group_configs (e.g., GROUP_N3_PRIMARY)')
     args = parser.parse_args()
-    from mario_encoding import group_configs
     if not hasattr(group_configs, args.config):
         raise ValueError(
             f"Config '{args.config}' not found in mario_encoding.group_configs. "
@@ -408,7 +408,7 @@ def main():
     logger.info("COMPLETE")
     logger.info("="*80)
     logger.info(f"Output: {output_dir}")
-    logger.info(f"Files: config.json, group_averages.npz, group_metadata.json")
+    logger.info(f"Files: config.json, R2_scores.npz, group_metadata.json")
     logger.info(f"CIFTIs: {len(group_averages)} mean maps")
     logger.info("")
 
