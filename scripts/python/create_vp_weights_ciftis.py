@@ -12,7 +12,8 @@ from pathlib import Path
 from nibabel.cifti2 import Cifti2Header, Cifti2Image
 from nibabel.cifti2.cifti2_axes import ScalarAxis
 
-from mario_encoding.config import PATHS
+from mario_encoding.config import PATHS, PARAMETERS
+from mario_encoding.utils.data_loading import get_template_cifti_path
 
 
 def load_extracted_weights(output_dir, feature_space, threshold_suffix='unique_thresh0p010', 
@@ -74,30 +75,6 @@ def load_extracted_weights(output_dir, feature_space, threshold_suffix='unique_t
     logger_func(f"  Threshold value: {metadata.get('threshold_value', 0.01)}")
     
     return weights_selective, selective_mask, valid_voxels_mask, metadata
-
-
-def get_template_cifti_path(subject, fmriprep_path=PATHS['fmriprep_data']):
-    """
-    Get path to a template CIFTI file for brain structure information.
-    
-    Parameters:
-    -----------
-    subject : int
-    fmriprep_path : Path
-        
-    Returns:
-    --------
-    template_path : Path
-    """
-    subject_dir = fmriprep_path / f'sub-{subject:02d}'
-    
-    # Find first available CIFTI file
-    cifti_files = sorted(subject_dir.rglob('*_space-fsLR_den-91k_bold.dtseries.nii'))
-    
-    if not cifti_files:
-        raise FileNotFoundError(f"No CIFTI files found for subject {subject}")
-    
-    return cifti_files[0]
 
 
 def create_weight_cifti(weights_selective, selective_mask, valid_voxels_mask,
@@ -220,7 +197,8 @@ def create_summary_weight_ciftis(weights_selective, selective_mask, valid_voxels
 
 def create_all_weight_ciftis(subject, train_sessions, test_sessions, experiment_id, 
                              feature_space, threshold_suffix='unique_thresh0p010',
-                             fmriprep_path=PATHS['fmriprep_data'],
+                             fmri_path=None,
+                             pipeline=None,
                              vp_results_path=None,
                              figures_path=PATHS['figures']):
     """
@@ -239,7 +217,10 @@ def create_all_weight_ciftis(subject, train_sessions, test_sessions, experiment_
         Timestamp-based experiment identifier
     feature_space : str
         Name of feature space (e.g., 'activity', 'motor')
-    fmriprep_path : Path
+    fmri_path : Path or None
+        Defaults to config-resolved path if None
+    pipeline : str or None
+        'fmriprep' or 'hcp'. Defaults to PARAMETERS['preprocessing_pipeline'] if None
     vp_results_path : Path or None
     figures_path : Path
         
@@ -247,6 +228,11 @@ def create_all_weight_ciftis(subject, train_sessions, test_sessions, experiment_
     --------
     dict : Paths to created CIFTI files
     """
+    if pipeline is None:
+        pipeline = PARAMETERS['preprocessing_pipeline']
+    if fmri_path is None:
+        fmri_path = PATHS['hcp_data'] if pipeline == 'hcp' else PATHS['fmriprep_data']
+
     print("="*80)
     print(f"CREATING {feature_space.upper()} WEIGHT CIFTI MAPS")
     print("="*80)
@@ -254,6 +240,7 @@ def create_all_weight_ciftis(subject, train_sessions, test_sessions, experiment_
     print(f"Train sessions: {train_sessions}")
     print(f"Test sessions: {test_sessions}")
     print(f"Feature space: {feature_space}")
+    print(f"Pipeline: {pipeline}")
     print()
     
     # Construct variance partitioning directory with experiment ID
@@ -280,7 +267,7 @@ def create_all_weight_ciftis(subject, train_sessions, test_sessions, experiment_
     
     # Get template CIFTI
     print("Getting template CIFTI...")
-    template_path = get_template_cifti_path(subject, fmriprep_path)
+    template_path = get_template_cifti_path(subject, fmri_path, pipeline)
     print(f"  Using: {template_path}")
     print()
     

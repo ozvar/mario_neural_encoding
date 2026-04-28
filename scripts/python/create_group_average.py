@@ -28,7 +28,8 @@ from nibabel.cifti2 import Cifti2Header, Cifti2Image
 from nibabel.cifti2.cifti2_axes import ScalarAxis
 
 from mario_encoding import group_configs
-from mario_encoding.config import PATHS
+from mario_encoding.config import PATHS, PARAMETERS
+from mario_encoding.utils.data_loading import get_template_cifti_path
 
 
 def setup_logging(output_dir):
@@ -349,17 +350,6 @@ def create_group_ciftis(group_averages, output_dir, template_cifti_path, logger)
         new_cifti.to_filename(str(output_path))
 
 
-def get_template_cifti_path(subject, fmriprep_path):
-    """Get path to a template CIFTI file from first subject."""
-    subject_dir = fmriprep_path / f'sub-{subject:02d}'
-    cifti_files = sorted(subject_dir.rglob('*_space-fsLR_den-91k_bold.dtseries.nii'))
-    if not cifti_files:
-        raise FileNotFoundError(
-            f"No CIFTI files found for subject {subject} in {subject_dir}"
-        )
-    return cifti_files[0]
-
-
 def main():
     """Main execution function."""
     parser = argparse.ArgumentParser(
@@ -385,6 +375,13 @@ def main():
     logger.info(f"Subjects: {[s['subject'] for s in config['subjects']]}")
     logger.info(f"Metrics: {len(config['metrics_to_average'])}")
     logger.info("")
+
+    pipeline = PARAMETERS['preprocessing_pipeline']
+    fmri_path = PATHS['hcp_data'] if pipeline == 'hcp' else PATHS['fmriprep_data']
+    logger.info(f"Preprocessing pipeline: {pipeline}")
+    logger.info(f"fMRI path: {fmri_path}")
+    logger.info("")
+
     subjects_data = []
     for subj_spec in config['subjects']:
         subj_results = load_subject_results(
@@ -401,7 +398,7 @@ def main():
         [s['metadata'] for s in subjects_data], logger
     )
     first_subject = config['subjects'][0]['subject']
-    template_cifti = get_template_cifti_path(first_subject, PATHS['fmriprep_data'])
+    template_cifti = get_template_cifti_path(first_subject, fmri_path, pipeline)
     create_group_ciftis(group_averages, output_dir, template_cifti, logger)
     logger.info("")
     logger.info("="*80)

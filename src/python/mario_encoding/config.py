@@ -17,6 +17,7 @@ PATHS = {
     'per_run_downsampled_to_TR': PROJECT_DIR / 'inputs' / 'per_run_downsampled_to_TR',
     'practice_phase_metadata': PROJECT_DIR / 'inputs' / 'practice_phase_metadata',
     'fmriprep_data': PROJECT_DIR / '..' / 'mario.fmriprep',
+    'hcp_data': Path('/public/home2/VNLab/Datasets/Cneuromod/mario/derivatives/hcp/sessions'),
     # Results directories
     'variance_partitioning': PROJECT_DIR / 'results' / 'variance_partitioning',
     'pca': PROJECT_DIR / 'results' / 'pca',
@@ -47,6 +48,9 @@ PARAMETERS = {
     'TR': 1.49,
     'frame_rate': 60.099826520671044,  # frame rate given by retro emulator.em.get_screen_rate()
     
+    # Preprocessing pipeline selection: 'fmriprep' or 'hcp'
+    'preprocessing_pipeline': 'hcp',
+
     # Encoding model parameters
     'encoding_model': {
         'delays': [1, 2, 3, 4, 5],           # FIR delays (in TRs)
@@ -115,7 +119,7 @@ FEATURE_SPACES = {
 # Ensure non-data directories exist
 PATHS['figures'].mkdir(parents=True, exist_ok=True)
 PATHS['logs'].mkdir(parents=True, exist_ok=True)
-PATHS['models'].mkdir(parents=True, exist_ok=True)
+#PATHS['models'].mkdir(parents=True, exist_ok=True)
 PATHS['variance_partitioning'].mkdir(parents=True, exist_ok=True)
 PATHS['pca'].mkdir(parents=True, exist_ok=True)
 PATHS['cv_scores'].mkdir(parents=True, exist_ok=True)

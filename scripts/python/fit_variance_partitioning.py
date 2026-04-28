@@ -473,6 +473,10 @@ def main():
     if set(train_sessions) & set(test_sessions):
         raise ValueError("Train and test sessions must not overlap!")
     
+    # Resolve fMRI path and pipeline from config
+    pipeline = PARAMETERS['preprocessing_pipeline']
+    fmri_path = PATHS['hcp_data'] if pipeline == 'hcp' else PATHS['fmriprep_data']
+
     # Setup logging
     session_range = (min(train_sessions), max(train_sessions))
     logger = setup_logging(args.subject, session_range, PATHS['logs'])
@@ -484,6 +488,8 @@ def main():
     logger.info(f"Training sessions: {train_sessions}")
     logger.info(f"Test sessions: {test_sessions}")
     logger.info(f"Backend: {args.backend}")
+    logger.info(f"Preprocessing pipeline: {pipeline}")
+    logger.info(f"fMRI path: {fmri_path}")
     logger.info(f"Feature spaces: {list(FEATURE_SPACES.keys())}")
     logger.info(f"Compute product measure: {args.compute_product_measure}")
     logger.info(f"Compute unique variance: {args.compute_unique_variance}")
@@ -540,13 +546,13 @@ def main():
     logger.info("Loading training data...")
     X_train, Y_train, run_onsets_train, session_onsets_train, level_onsets_train, feature_names = concatenate_sessions_with_names(
         args.subject, train_sessions, PATHS['practice_phase_metadata'],
-        PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
+        PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger
     )
     
     logger.info("Loading test data...")
     X_test, Y_test, run_onsets_test, session_onsets_test, level_onsets_test, feature_names_test_original = concatenate_sessions_with_names(
         args.subject, test_sessions, PATHS['practice_phase_metadata'],
-        PATHS['per_run_downsampled_to_TR'], PATHS['fmriprep_data'], logger
+        PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger
     )
     
     if feature_names != feature_names_test_original:

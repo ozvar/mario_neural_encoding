@@ -12,6 +12,70 @@ from pathlib import Path
 from voxelwise_tutorials.utils import zscore_runs
 
 
+def get_fmri_filepath(subject: int, session: int, run: int, fmri_path: Path, pipeline: str) -> Path:
+    """
+    Construct the CIFTI filepath for a single run based on preprocessing pipeline.
+
+    Parameters:
+    -----------
+    subject : int
+    session : int
+    run : int
+    fmri_path : Path
+    pipeline : str
+        'fmriprep' or 'hcp'
+
+    Returns:
+    --------
+    filepath : Path
+    """
+    if pipeline == 'fmriprep':
+        return (fmri_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func' /
+                f'sub-{subject:02d}_ses-{session:03d}_task-mario_run-{run}_space-fsLR_den-91k_bold.dtseries.nii')
+    elif pipeline == 'hcp':
+        session_dir = f'{subject:02d}_{session:03d}'
+        run_dir = f'tfMRI_MRO_RUN{run}_PA'
+        return (fmri_path / session_dir / 'hcp' / session_dir /
+                'MNINonLinear' / 'Results' / run_dir /
+                f'{run_dir}_Atlas_MSMAll_hp0_clean.dtseries.nii')
+    else:
+        raise ValueError(f"Unknown pipeline: '{pipeline}'. Expected 'fmriprep' or 'hcp'.")
+
+
+def get_template_cifti_path(subject: int, fmri_path: Path, pipeline: str) -> Path:
+    """
+    Get path to a template CIFTI file for brain structure information.
+
+    Parameters:
+    -----------
+    subject : int
+    fmri_path : Path
+    pipeline : str
+        'fmriprep' or 'hcp'
+
+    Returns:
+    --------
+    template_path : Path
+    """
+    if pipeline == 'fmriprep':
+        subject_dir = fmri_path / f'sub-{subject:02d}'
+        cifti_files = sorted(subject_dir.rglob('*_space-fsLR_den-91k_bold.dtseries.nii'))
+    elif pipeline == 'hcp':
+        subject_glob = f'{subject:02d}_*'
+        cifti_files = sorted(fmri_path.glob(
+            f'{subject_glob}/hcp/{subject_glob}/MNINonLinear/Results/tfMRI_MRO_RUN*_PA/'
+            f'*_Atlas_MSMAll_hp0_clean.dtseries.nii'
+        ))
+    else:
+        raise ValueError(f"Unknown pipeline: '{pipeline}'. Expected 'fmriprep' or 'hcp'.")
+
+    if not cifti_files:
+        raise FileNotFoundError(
+            f"No CIFTI files found for subject {subject} in {fmri_path} (pipeline='{pipeline}')"
+        )
+    return cifti_files[0]
+
+
 def load_practice_metadata(subject, session, practice_metadata_path):
     """
     Load practice phase metadata JSON for one session.
@@ -85,7 +149,7 @@ def load_practice_features_with_names(subject, session, practice_runs, downsampl
     return X, feature_names
 
 
-def load_practice_fmri(subject, session, practice_runs, fmriprep_path):
+def load_practice_fmri(subject: int, session: int, practice_runs: list, fmri_path: Path, pipeline: str) -> np.ndarray:
     """
     Load CIFTI fMRI data for practice runs and concatenate.
     
@@ -94,7 +158,9 @@ def load_practice_fmri(subject, session, practice_runs, fmriprep_path):
     subject : int
     session : int
     practice_runs : list of int
-    fmriprep_path : Path
+    fmri_path : Path
+    pipeline : str
+        'fmriprep' or 'hcp'
         
     Returns:
     --------
@@ -103,8 +169,7 @@ def load_practice_fmri(subject, session, practice_runs, fmriprep_path):
     Y_list = []
     
     for run in practice_runs:
-        filepath = (fmriprep_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func' /
-                   f'sub-{subject:02d}_ses-{session:03d}_task-mario_run-{run}_space-fsLR_den-91k_bold.dtseries.nii')
+        filepath = get_fmri_filepath(subject, session, run, fmri_path, pipeline)
         if not filepath.exists():
             raise FileNotFoundError(f"CIFTI file not found: {filepath}")
         
@@ -117,7 +182,8 @@ def load_practice_fmri(subject, session, practice_runs, fmriprep_path):
     return Y
 
 
-def validate_session_files(subject, session, metadata, downsampled_path, fmriprep_path):
+def validate_session_files(subject: int, session: int, metadata: dict,
+                           downsampled_path: Path, fmri_path: Path, pipeline: str) -> None:
     """
     Validate that all required files exist before loading.
     
@@ -127,7 +193,9 @@ def validate_session_files(subject, session, metadata, downsampled_path, fmripre
     session : int
     metadata : dict
     downsampled_path : Path
-    fmriprep_path : Path
+    fmri_path : Path
+    pipeline : str
+        'fmriprep' or 'hcp'
     """
     practice_runs = metadata['practice_runs']
     
@@ -140,13 +208,13 @@ def validate_session_files(subject, session, metadata, downsampled_path, fmripre
     
     # Check fMRI CIFTI files
     for run in practice_runs:
-        filepath = (fmriprep_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func' /
-                   f'sub-{subject:02d}_ses-{session:03d}_task-mario_run-{run}_space-fsLR_den-91k_bold.dtseries.nii')
+        filepath = get_fmri_filepath(subject, session, run, fmri_path, pipeline)
         if not filepath.exists():
             raise FileNotFoundError(f"Missing CIFTI file: {filepath}")
 
 
-def load_session_data_with_names(subject, session, practice_metadata_path, downsampled_path, fmriprep_path, logger):
+def load_session_data_with_names(subject: int, session: int, practice_metadata_path: Path,
+                                 downsampled_path: Path, fmri_path: Path, pipeline: str, logger):
     """
     Load all practice phase data for one session, returning feature names.
     
@@ -156,7 +224,9 @@ def load_session_data_with_names(subject, session, practice_metadata_path, downs
     session : int
     practice_metadata_path : Path
     downsampled_path : Path
-    fmriprep_path : Path
+    fmri_path : Path
+    pipeline : str
+        'fmriprep' or 'hcp'
     logger : logging.Logger
         
     Returns:
@@ -174,14 +244,14 @@ def load_session_data_with_names(subject, session, practice_metadata_path, downs
     logger.info(f"  Total samples: {metadata['n_samples']}")
     logger.info(f"  Total levels: {metadata['n_levels']}")
     
-    validate_session_files(subject, session, metadata, downsampled_path, fmriprep_path)
+    validate_session_files(subject, session, metadata, downsampled_path, fmri_path, pipeline)
     logger.info("  All required files validated")
     
     X, feature_names = load_practice_features_with_names(subject, session, metadata['practice_runs'], downsampled_path)
     logger.info(f"  Loaded features: {X.shape}")
     logger.info(f"  Feature names (in file order): {len(feature_names)}")
     
-    Y = load_practice_fmri(subject, session, metadata['practice_runs'], fmriprep_path)
+    Y = load_practice_fmri(subject, session, metadata['practice_runs'], fmri_path, pipeline)
     logger.info(f"  Loaded fMRI: {Y.shape}")
     
     # Validate shapes
@@ -193,7 +263,8 @@ def load_session_data_with_names(subject, session, practice_metadata_path, downs
     return X, Y, metadata, feature_names
 
 
-def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, downsampled_path, fmriprep_path, logger):
+def concatenate_sessions_with_names(subject: int, sessions: list, practice_metadata_path: Path,
+                                    downsampled_path: Path, fmri_path: Path, pipeline: str, logger):
     """
     Load and concatenate data from multiple sessions, preserving feature names.
     
@@ -206,7 +277,9 @@ def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, d
     sessions : list of int
     practice_metadata_path : Path
     downsampled_path : Path
-    fmriprep_path : Path
+    fmri_path : Path
+    pipeline : str
+        'fmriprep' or 'hcp'
     logger : logging.Logger
         
     Returns:
@@ -229,7 +302,7 @@ def concatenate_sessions_with_names(subject, sessions, practice_metadata_path, d
     
     for session in sessions:
         X_sess, Y_sess, metadata, feat_names = load_session_data_with_names(
-            subject, session, practice_metadata_path, downsampled_path, fmriprep_path, logger
+            subject, session, practice_metadata_path, downsampled_path, fmri_path, pipeline, logger
         )
         
         # First session defines canonical feature order

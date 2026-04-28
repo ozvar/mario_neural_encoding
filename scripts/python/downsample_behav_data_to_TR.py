@@ -11,6 +11,7 @@ import numpy as np
 import nibabel as nib
 from pathlib import Path
 from mario_encoding.config import PATHS, PARAMETERS
+from mario_encoding.utils.data_loading import get_fmri_filepath
 
 
 def identify_feature_types(df, metadata_cols=['TR_bin']):
@@ -123,39 +124,39 @@ def downsample_continuous_features(group, continuous_cols, method='mean'):
         raise ValueError(f"Unknown method: {method}")
 
 
-def get_fmri_n_trs(subject, session, run, fmriprep_path=PATHS['fmriprep_data']):
+def get_fmri_n_trs(subject: int, session: int, run: int, fmri_path: Path, pipeline: str) -> int:
     """
     Get number of TRs from CIFTI file.
-    
+
     Parameters:
     -----------
     subject : int
     session : int
     run : int
-    fmriprep_path : Path
-        
+    fmri_path : Path
+    pipeline : str
+        'fmriprep' or 'hcp'
+
     Returns:
     --------
     n_trs : int
     """
-    cifti_path = (fmriprep_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func' /
-                  f'sub-{subject:02d}_ses-{session:03d}_task-mario_run-{run}_space-fsLR_den-91k_bold.dtseries.nii')
+    cifti_path = get_fmri_filepath(subject, session, run, fmri_path, pipeline)
     if not cifti_path.exists():
         raise FileNotFoundError(f"CIFTI file not found: {cifti_path}")
-    cifti = nib.load(str(cifti_path))
-    return cifti.get_fdata().shape[0]
+    return nib.load(str(cifti_path)).shape[0]
 
 
-def downsample_run_to_TR(df, subject, session, run, tr, fmriprep_path, binary_method='mean', continuous_method='mean'):
+def downsample_run_to_TR(df, subject, session, run, tr, fmri_path, pipeline, binary_method='mean', continuous_method='mean'):
     """
     Downsample a single run from framewise to TR sampling rate, matching fMRI length.
-    
+
     This function:
     1. Gets actual fMRI n_TRs from CIFTI file
     2. Creates complete TR grid (0 to n_TRs-1)
     3. Aggregates frames into TRs where behavioral data exists
     4. Fills gaps (ITIs and post-task baseline) with zeros
-    
+
     Parameters:
     -----------
     df : pd.DataFrame
@@ -165,19 +166,21 @@ def downsample_run_to_TR(df, subject, session, run, tr, fmriprep_path, binary_me
     run : int
     tr : float
         Repetition time in seconds
-    fmriprep_path : Path
-        Path to fMRI data
+    fmri_path : Path
+        Path to fMRI data directory
+    pipeline : str
+        'fmriprep' or 'hcp'
     binary_method : str
         Aggregation method for binary features
     continuous_method : str
         Aggregation method for continuous features
-        
+
     Returns:
     --------
     pd.DataFrame
         Downsampled features (one row per TR) with TR_index and TR_time columns
     """
-    n_trs_fmri = get_fmri_n_trs(subject, session, run, fmriprep_path)
+    n_trs_fmri = get_fmri_n_trs(subject, session, run, fmri_path, pipeline)
     df = create_TR_bins(df, tr)
     binary_cols, continuous_cols = identify_feature_types(df, metadata_cols=['TR_bin', 'frame_time_in_run'])
     all_feature_cols = binary_cols + continuous_cols
@@ -252,11 +255,11 @@ def extract_subject_session_run_from_path(filepath):
         raise ValueError(f"Could not parse subject/session/run from filename: {filename}")
 
 
-def process_run_downsampling(filepath, tr, frame_rate, fmriprep_path, binary_method='mean', 
+def process_run_downsampling(filepath, tr, frame_rate, fmri_path, pipeline, binary_method='mean',
                             continuous_method='mean', per_run_downsampled_path=PATHS['per_run_downsampled_to_TR']):
     """
     Process a single run file: downsample from framewise to TR.
-    
+
     Parameters:
     -----------
     filepath : str or Path
@@ -265,15 +268,17 @@ def process_run_downsampling(filepath, tr, frame_rate, fmriprep_path, binary_met
         Repetition time in seconds
     frame_rate : float
         Frame rate in fps (unused but kept for compatibility)
-    fmriprep_path : Path
+    fmri_path : Path
         Path to fMRI data directory
+    pipeline : str
+        'fmriprep' or 'hcp'
     binary_method : str
         Aggregation method for binary features
     continuous_method : str
         Aggregation method for continuous features
     per_run_downsampled_path : Path
         Output directory path
-        
+
     Returns:
     --------
     dict with processing results (subject, session, run, status, metrics)
@@ -289,7 +294,8 @@ def process_run_downsampling(filepath, tr, frame_rate, fmriprep_path, binary_met
             session=session,
             run=run,
             tr=tr,
-            fmriprep_path=fmriprep_path,
+            fmri_path=fmri_path,
+            pipeline=pipeline,
             binary_method=binary_method,
             continuous_method=continuous_method
         )
@@ -319,19 +325,22 @@ def process_run_downsampling(filepath, tr, frame_rate, fmriprep_path, binary_met
         }
 
 
-def process_all_run_downsampling(tr, frame_rate, binary_method='mean', continuous_method='mean',
+def process_all_run_downsampling(tr, frame_rate, fmri_path, pipeline, binary_method='mean', continuous_method='mean',
                                  per_run_pruned_path=PATHS['per_run_pruned_features'],
-                                 per_run_downsampled_path=PATHS['per_run_downsampled_to_TR'],
-                                 fmriprep_path=PATHS['fmriprep_data']):
+                                 per_run_downsampled_path=PATHS['per_run_downsampled_to_TR']):
     """
     Process all run-level pruned feature files: downsample to TR.
-    
+
     Parameters:
     -----------
     tr : float
         Repetition time in seconds
     frame_rate : float
         Frame rate in fps
+    fmri_path : Path
+        Path to fMRI data directory
+    pipeline : str
+        'fmriprep' or 'hcp'
     binary_method : str
         Aggregation method for binary features
     continuous_method : str
@@ -340,9 +349,7 @@ def process_all_run_downsampling(tr, frame_rate, binary_method='mean', continuou
         Input directory path
     per_run_downsampled_path : Path
         Output directory path
-    fmriprep_path : Path
-        Path to fMRI data directory
-        
+
     Returns:
     --------
     pd.DataFrame with processing results for all runs
@@ -363,7 +370,8 @@ def process_all_run_downsampling(tr, frame_rate, binary_method='mean', continuou
             filepath=filepath,
             tr=tr,
             frame_rate=frame_rate,
-            fmriprep_path=fmriprep_path,
+            fmri_path=fmri_path,
+            pipeline=pipeline,
             binary_method=binary_method,
             continuous_method=continuous_method,
             per_run_downsampled_path=per_run_downsampled_path
@@ -377,17 +385,24 @@ def process_all_run_downsampling(tr, frame_rate, binary_method='mean', continuou
 
 
 if __name__ == '__main__':
+    pipeline = PARAMETERS['preprocessing_pipeline']
+    fmri_path = PATHS['hcp_data'] if pipeline == 'hcp' else PATHS['fmriprep_data']
+
     print("Downsampling behavioral features to TR...")
+    print(f"Pipeline: {pipeline}")
+    print(f"fMRI path: {fmri_path}")
     print(f"Input path: {PATHS['per_run_pruned_features']}")
     print(f"Output path: {PATHS['per_run_downsampled_to_TR']}")
     print(f"TR: {PARAMETERS['TR']}s")
     print(f"Frame rate: {PARAMETERS['frame_rate']} fps")
     print(f"Frames per TR: {PARAMETERS['frame_rate'] * PARAMETERS['TR']:.1f}")
     print()
-    
+
     results = process_all_run_downsampling(
         tr=PARAMETERS['TR'],
         frame_rate=PARAMETERS['frame_rate'],
+        fmri_path=fmri_path,
+        pipeline=pipeline,
         binary_method='mean',
         continuous_method='mean'
     )

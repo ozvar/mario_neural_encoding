@@ -12,16 +12,8 @@ from pathlib import Path
 from nibabel.cifti2 import Cifti2Header, Cifti2Image
 from nibabel.cifti2.cifti2_axes import ScalarAxis
 
-from mario_encoding.config import PATHS
-
-
-def get_template_cifti_path(subject, fmriprep_path=PATHS['fmriprep_data']):
-    """Get path to a template CIFTI file for brain structure information."""
-    subject_dir = fmriprep_path / f'sub-{subject:02d}'
-    cifti_files = sorted(subject_dir.rglob('*_space-fsLR_den-91k_bold.dtseries.nii'))
-    if not cifti_files:
-        raise FileNotFoundError(f"No CIFTI files found for subject {subject}")
-    return cifti_files[0]
+from mario_encoding.config import PATHS, PARAMETERS
+from mario_encoding.utils.data_loading import get_template_cifti_path
 
 
 def create_cifti_from_scores(scores, voxel_mask, template_path, output_path, 
@@ -60,8 +52,7 @@ def create_cifti_from_scores(scores, voxel_mask, template_path, output_path,
 def construct_vp_directory(subject, train_sessions, test_sessions, experiment_id, vp_results_path):
     """Construct variance partitioning directory path."""
     if vp_results_path is None:
-        vp_results_path = PATHS.get('variance_partitioning',
-                                     PATHS['models'].parent / 'variance_partitioning')
+        vp_results_path = PATHS['variance_partitioning']
     train_str = f"{min(train_sessions):03d}-{max(train_sessions):03d}"
     test_str = f"{min(test_sessions):03d}-{max(test_sessions):03d}"
     dataset_dir = f'sub-{subject:02d}_train-ses-{train_str}_test-ses-{test_str}'
@@ -153,10 +144,10 @@ def load_significance_results(vp_output_dir):
 
 
 def setup_template_and_output(subject, train_sessions, test_sessions, experiment_id,
-                               fmriprep_path, figures_path, dataset_dir):
+                               fmri_path, pipeline, figures_path, dataset_dir):
     """Get template CIFTI and create output directory."""
     print("Getting template CIFTI...")
-    template_path = get_template_cifti_path(subject, fmriprep_path)
+    template_path = get_template_cifti_path(subject, fmri_path, pipeline)
     print(f"  Using: {template_path}")
     print()
     cifti_output_dir = figures_path / 'model_ciftis' / dataset_dir / experiment_id
@@ -167,7 +158,7 @@ def setup_template_and_output(subject, train_sessions, test_sessions, experiment
 
 
 def prepare_data_and_paths(subject, train_sessions, test_sessions, experiment_id,
-                           fmriprep_path, vp_results_path, figures_path):
+                           fmri_path, pipeline, vp_results_path, figures_path):
     """
     Load all data and prepare paths for CIFTI creation.
     
@@ -185,7 +176,7 @@ def prepare_data_and_paths(subject, train_sessions, test_sessions, experiment_id
     significance = load_significance_results(vp_output_dir)
     template_path, cifti_output_dir = setup_template_and_output(
         subject, train_sessions, test_sessions, experiment_id,
-        fmriprep_path, figures_path, dataset_dir
+        fmri_path, pipeline, figures_path, dataset_dir
     )
     return {
         'vp_output_dir': vp_output_dir,
@@ -463,7 +454,8 @@ def print_results_summary(data, created_files):
 
 
 def create_vp_model_ciftis(subject, train_sessions, test_sessions, experiment_id,
-                           fmriprep_path=PATHS['fmriprep_data'],
+                           fmri_path=None,
+                           pipeline=None,
                            vp_results_path=None,
                            figures_path=PATHS['figures']):
     """
@@ -489,7 +481,10 @@ def create_vp_model_ciftis(subject, train_sessions, test_sessions, experiment_id
     test_sessions : list of int
     experiment_id : str
         Timestamp-based experiment identifier
-    fmriprep_path : Path
+    fmri_path : Path or None
+        Defaults to config-resolved path if None
+    pipeline : str or None
+        'fmriprep' or 'hcp'. Defaults to PARAMETERS['preprocessing_pipeline'] if None
     vp_results_path : Path or None
     figures_path : Path
         
@@ -497,6 +492,11 @@ def create_vp_model_ciftis(subject, train_sessions, test_sessions, experiment_id
     --------
     dict : Paths to created CIFTI files
     """
+    if pipeline is None:
+        pipeline = PARAMETERS['preprocessing_pipeline']
+    if fmri_path is None:
+        fmri_path = PATHS['hcp_data'] if pipeline == 'hcp' else PATHS['fmriprep_data']
+
     print("="*80)
     print("CREATING VARIANCE PARTITIONING MODEL CIFTI")
     print("="*80)
@@ -504,10 +504,11 @@ def create_vp_model_ciftis(subject, train_sessions, test_sessions, experiment_id
     print(f"Train sessions: {train_sessions}")
     print(f"Test sessions: {test_sessions}")
     print(f"Experiment ID: {experiment_id}")
+    print(f"Pipeline: {pipeline}")
     print()
     data = prepare_data_and_paths(
         subject, train_sessions, test_sessions, experiment_id,
-        fmriprep_path, vp_results_path, figures_path
+        fmri_path, pipeline, vp_results_path, figures_path
     )
     created_files = generate_ciftis(data)
     print_results_summary(data, created_files)
