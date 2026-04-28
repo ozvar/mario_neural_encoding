@@ -215,7 +215,7 @@ def fit_full_model(X_train_list, Y_train, cv_onsets, params, backend, logger):
         solver=params['solver'],
         solver_params=params['solver_params'],
         cv=cv,
-        Y_in_cpu=False,
+        Y_in_cpu=True,
         force_cpu=False
     )
     
@@ -277,7 +277,7 @@ def fit_restricted_model(X_train_list, Y_train, excluded_space_name, space_names
         solver=params['solver'],
         solver_params=params['solver_params'],
         cv=cv,
-        Y_in_cpu=False,
+        Y_in_cpu=True,
         force_cpu=False
     )
     
