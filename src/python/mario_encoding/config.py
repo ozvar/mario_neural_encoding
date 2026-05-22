@@ -58,7 +58,7 @@ PARAMETERS = {
         'alpha_min': 1,                   # Minimum alpha: 10^alpha_min
         'alpha_max': 20,                  # Maximum alpha: 10^alpha_max
         'solver_params': {
-            'n_targets_batch': 500,       # Batch size for grayordinates (GPU memory)
+            'n_targets_batch': 2000,       # Batch size for grayordinates (GPU memory)
             'n_alphas_batch': 5,          # Batch size for alphas
             'n_targets_batch_refit': 500  # Batch size for refit
         }
@@ -69,7 +69,7 @@ PARAMETERS = {
         'solver': 'random_search',
         'solver_params': {
             'n_iter': 100,  # Random search iterations
-            'n_targets_batch': 500,  # GPU memory management
+            'n_targets_batch': 2000,  # GPU memory management
             'alphas': np.logspace(1, 20, 20)
         }
     }

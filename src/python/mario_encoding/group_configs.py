@@ -100,3 +100,98 @@ GROUP_N3_PRIMARY = {
     ]
   },
 }
+
+GROUP_N5_PRIMARY = {
+  "output_label": "group_n5_primary_analysis",
+  "subjects": [
+    {
+      "subject": 1,
+      "train_sessions": [7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19],
+      "test_sessions": [20],
+      "experiment_id": "20260511_221922"
+    },
+    {
+      "subject": 2,
+      "train_sessions": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
+      "test_sessions": [23],
+      "experiment_id": "20260430_210049"
+    },
+    {
+      "subject": 3,
+      "train_sessions": [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
+      "test_sessions": [30],
+      "experiment_id": "20260428_190303"
+    },
+    {
+      "subject": 5,
+      "train_sessions": [9, 10, 11, 12, 13, 14, 15, 16, 17],
+      "test_sessions": [18],
+      "experiment_id": "20260427_150334"
+    },
+    {
+      "subject": 6,
+      "train_sessions": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
+      "test_sessions": [24],
+      "experiment_id": "20260518_111913"
+    }
+  ],
+  "metrics_to_average": [
+    "R2_full",
+    "R2_unique_motor",
+    "R2_unique_scene",
+    "R2_shared",
+    "product_measure_motor",
+    "product_measure_scene"
+  ],
+  "feature_spaces": {
+    "motor": [
+      "B",
+      "A",
+      "RIGHT",
+      "LEFT",
+      "UP",
+      "DOWN"
+    ],
+    "scene": [
+      "Enemy",
+      "2-Horde",
+      "3-Horde",
+      "4-Horde",
+      "Roof",
+      "Gap",
+      "Multiple gaps",
+      "Variable gaps",
+      "Gap enemy",
+      "Pillar gap",
+      "Valley",
+      "Pipe valley",
+      "Empty valley",
+      "Enemy valley",
+      "Roof valley",
+      "Stair up",
+      "Stair down",
+      "Empty stair valley",
+      "Enemy stair valley",
+      "Gap stair valley",
+      "2-Path",
+      "3-Path",
+      "Risk/Reward",
+      "Reward",
+      "Moving platform",
+      "Flagpole",
+      "Beginning",
+      "Bonus zone",
+      "Waterworld",
+      "Checkpoint",
+      "mario_big",
+      "mario_fire",
+      "mario_star",
+      "powerup_visible",
+      "enemy_drawn19",
+      "enemy_drawn17",
+      "enemy_drawn18",
+      "enemy_drawn16",
+      "enemy_drawn15"
+    ]
+  },
+}
