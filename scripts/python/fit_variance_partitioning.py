@@ -590,11 +590,11 @@ def main():
         logger.info("BASELINE FILTERING")
         logger.info("="*80)
         
-        X_train, Y_train, run_onsets_train = filter_baseline_periods(
-            X_train, Y_train, run_onsets_train, logger
+        X_train, Y_train, run_onsets_train, session_onsets_train = filter_baseline_periods(
+            X_train, Y_train, run_onsets_train, session_onsets_train, logger
         )
-        X_test, Y_test, run_onsets_test = filter_baseline_periods(
-            X_test, Y_test, run_onsets_test, logger
+        X_test, Y_test, run_onsets_test, session_onsets_test = filter_baseline_periods(
+            X_test, Y_test, run_onsets_test, session_onsets_test, logger
         )
     else:
         logger.info("")

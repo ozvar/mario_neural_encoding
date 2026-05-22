@@ -324,7 +324,13 @@ def concatenate_sessions_with_names(subject: int, sessions: list, practice_metad
         # Track run and level onsets
         run_onsets_sess = np.array(metadata['run_onsets']) + cumulative_samples
         level_onsets_sess = np.array(metadata['level_onsets']) + cumulative_samples
-        run_onsets_list.extend(run_onsets_sess[1:].tolist())
+        # Include all onsets from this session (not [1:]) so session-boundary first-run
+        # onsets are not lost. For the first session, run_onsets_sess[0]=0 is already
+        # in run_onsets_list, so skip it; for all others include the full list.
+        if cumulative_samples == 0:
+            run_onsets_list.extend(run_onsets_sess[1:].tolist())
+        else:
+            run_onsets_list.extend(run_onsets_sess.tolist())
         level_onsets_list.extend(level_onsets_sess[1:].tolist())
         
         cumulative_samples += metadata['n_samples']
@@ -377,63 +383,79 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     return X, Y
 
 
-def filter_baseline_periods(X, Y, run_onsets, logger, threshold=0.01):
+def filter_baseline_periods(X, Y, run_onsets, session_onsets, logger, threshold=0.01):
     """
     Remove ITI/baseline periods where all behavioral features are zero.
-    
+
     Parameters:
     -----------
     X : array of shape (n_samples, n_features)
     Y : array of shape (n_samples, n_grayordinates)
     run_onsets : array of int
+    session_onsets : array of int
     logger : logging.Logger
     threshold : float
         Activity threshold for identifying non-baseline TRs
-        
+
     Returns:
     --------
     X_active : array
     Y_active : array
     run_onsets_active : array
+    session_onsets_active : array
     """
     logger.info("Filtering baseline/ITI periods...")
-    
+
     # Split by runs
     X_runs = np.split(X, run_onsets[1:])
     Y_runs = np.split(Y, run_onsets[1:])
-    
+
     X_active_list = []
     Y_active_list = []
     run_onsets_active = [0]
     cumulative = 0
     total_dropped = 0
-    
+
     for i, (X_run, Y_run) in enumerate(zip(X_runs, Y_runs)):
         # Identify active TRs (where features are nonzero)
         activity = np.abs(X_run).sum(axis=1)
         active_mask = activity > threshold
-        
+
         n_dropped = (~active_mask).sum()
         total_dropped += n_dropped
-        
+
         if n_dropped > 0:
             logger.info(f"  Run {i+1}: Kept {active_mask.sum()}/{len(active_mask)} TRs (dropped {n_dropped} ITI/baseline)")
-        
+
         # Keep only active TRs
         X_active_list.append(X_run[active_mask])
         Y_active_list.append(Y_run[active_mask])
-        
+
         cumulative += active_mask.sum()
         run_onsets_active.append(cumulative)
-    
+
     X_active = np.vstack(X_active_list)
     Y_active = np.vstack(Y_active_list)
     run_onsets_active = np.array(run_onsets_active[:-1])
-    
+
+    # Recompute session_onsets in the filtered sample space using the per-sample mask.
+    # session_onsets[i] is the pre-filter start index of session i; we count active
+    # samples within each session's span to get post-filter positions.
+    activity_all = np.abs(X).sum(axis=1) > threshold
+    session_onsets_active_list = [0]
+    cum_sess = 0
+    for i in range(len(session_onsets)):
+        sess_start = session_onsets[i]
+        sess_end = int(session_onsets[i + 1]) if i + 1 < len(session_onsets) else len(X)
+        cum_sess += int(activity_all[sess_start:sess_end].sum())
+        if i < len(session_onsets) - 1:
+            session_onsets_active_list.append(cum_sess)
+    session_onsets_active = np.array(session_onsets_active_list)
+
     logger.info(f"Total TRs dropped: {total_dropped} ({total_dropped/len(X)*100:.1f}%)")
     logger.info(f"Active TRs kept: {len(X_active)} ({len(X_active)/len(X)*100:.1f}%)")
-    
-    return X_active, Y_active, run_onsets_active
+
+    return X_active, Y_active, run_onsets_active, session_onsets_active
 
 
 def select_and_validate_features(X, feature_names, feature_spaces_dict, logger):
