@@ -20,19 +20,19 @@ from pathlib import Path
 
 import numpy as np
 from sklearn.preprocessing import StandardScaler
-from sklearn.pipeline import make_pipeline
-from voxelwise_tutorials.delayer import Delayer
 from himalaya.backend import set_backend
 
 from mario_encoding.config import PATHS, PARAMETERS, FEATURE_SPACES
 from mario_encoding.utils.experiment_utils import create_experiment_config, save_experiment_config
 from mario_encoding.utils.data_loading import (
     concatenate_sessions_with_names,
-    filter_baseline_periods,
     select_and_validate_features,
     filter_zero_variance_features,
     filter_zero_variance_voxels,
-    preprocess_data
+    preprocess_data,
+    compute_baseline_mask,
+    apply_delays_per_run,
+    drop_baseline_samples,
 )
 from mario_encoding.variance_partitioning import (
     map_features_to_spaces,
@@ -206,6 +206,36 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
         weights_full, weights_by_space, space_names_ordered,
         output_dir, 'full', logger
     )
+
+    # ========================================================================
+    # SAVE HYPERPARAMETERS (per-band alphas for grid inspection)
+    # ========================================================================
+    logger.info("")
+    logger.info("Saving hyperparameters from full model...")
+
+    deltas = model_full.deltas_
+    best_alphas = model_full.best_alphas_
+    if hasattr(deltas, 'cpu'):
+        deltas = deltas.cpu().numpy()
+    if hasattr(best_alphas, 'cpu'):
+        best_alphas = best_alphas.cpu().numpy()
+
+    # Per-band effective alpha = 1 / exp(deltas[g, v]); see himalaya GroupRidgeCV docs.
+    per_band_alpha = 1.0 / np.exp(deltas)
+
+    hyper_file = output_dir / 'hyperparameters_full.npz'
+    np.savez_compressed(
+        hyper_file,
+        deltas=deltas,
+        best_alphas=best_alphas,
+        per_band_alpha=per_band_alpha,
+        space_names=np.array(space_names_ordered),
+    )
+    logger.info(f"  Saved to: {hyper_file}")
+    for idx, name in enumerate(space_names_ordered):
+        a = per_band_alpha[idx]
+        logger.info(f"  {name}: alpha p5={np.percentile(a, 5):.3g}, "
+                    f"p50={np.percentile(a, 50):.3g}, p95={np.percentile(a, 95):.3g}")
     
     # ========================================================================
     # OPTIONALLY SAVE FULL MODEL (for permutation testing)
@@ -582,65 +612,42 @@ def main():
         raise ValueError("Feature selection masks differ between train and test data!")
     
     # ========================================================================
-    # FILTER BASELINE PERIODS
-    # ========================================================================
-    if not args.skip_baseline_filtering:
-        logger.info("")
-        logger.info("="*80)
-        logger.info("BASELINE FILTERING")
-        logger.info("="*80)
-        
-        X_train, Y_train, run_onsets_train, session_onsets_train = filter_baseline_periods(
-            X_train, Y_train, run_onsets_train, session_onsets_train, logger
-        )
-        X_test, Y_test, run_onsets_test, session_onsets_test = filter_baseline_periods(
-            X_test, Y_test, run_onsets_test, session_onsets_test, logger
-        )
-    else:
-        logger.info("")
-        logger.info("="*80)
-        logger.info("SKIPPING BASELINE FILTERING (using all TRs)")
-        logger.info("="*80)
-    
-    # ========================================================================
-    # SELECT CV SCHEME
+    # COMPUTE BASELINE MASK (do not drop yet — needed for per-run delaying)
     # ========================================================================
     logger.info("")
     logger.info("="*80)
-    logger.info("CROSS-VALIDATION SCHEME")
+    logger.info("BASELINE MASK")
     logger.info("="*80)
-    
-    if args.cv_scheme == 'loro':
-        cv_onsets_train = run_onsets_train
-        logger.info(f"Using LORO (Leave-One-Run-Out) CV")
-        logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
-    elif args.cv_scheme == 'loso':
-        cv_onsets_train = session_onsets_train
-        logger.info(f"Using LOSO (Leave-One-Session-Out) CV")
-        logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
-        logger.info(f"  Training sessions: {train_sessions}")
+
+    if not args.skip_baseline_filtering:
+        active_mask_train = compute_baseline_mask(X_train, run_onsets_train, logger=logger)
+        active_mask_test = compute_baseline_mask(X_test, run_onsets_test, logger=logger)
+    else:
+        logger.info("Skipping baseline filtering (using all TRs)")
+        active_mask_train = np.ones(X_train.shape[0], dtype=bool)
+        active_mask_test = np.ones(X_test.shape[0], dtype=bool)
 
     # ========================================================================
-    # FILTER ZERO-VARIANCE FEATURES AND VOXELS
+    # FILTER ZERO-VARIANCE FEATURES AND VOXELS (on full data, ITI included)
     # ========================================================================
     logger.info("")
     logger.info("="*80)
     logger.info("FEATURE FILTERING")
     logger.info("="*80)
-    
+
     X_train, X_test, valid_features_mask = filter_zero_variance_features(
         X_train, X_test, run_onsets_train, logger
     )
-    
+
     logger.info("")
     logger.info("="*80)
     logger.info("VOXEL FILTERING")
     logger.info("="*80)
-    
+
     Y_train, Y_test, valid_voxels_mask = filter_zero_variance_voxels(
         Y_train, Y_test, run_onsets_train, logger
     )
-    
+
     # ========================================================================
     # MAP FEATURES TO SPACES
     # ========================================================================
@@ -648,65 +655,101 @@ def main():
     logger.info("="*80)
     logger.info("FEATURE SPACE MAPPING")
     logger.info("="*80)
-    
+
     feature_spaces_filtered, space_to_indices = map_features_to_spaces(
         feature_names, valid_features_mask, FEATURE_SPACES, logger
     )
-    
-    # Validate all spaces have >0 features
+
     validate_all_spaces_nonempty(feature_spaces_filtered, logger)
-    
+
     # ========================================================================
-    # PREPROCESS DATA
+    # PREPROCESS DATA (z-score Y within runs on full data, NaN to 0)
     # ========================================================================
     logger.info("")
     logger.info("="*80)
     logger.info("PREPROCESSING")
     logger.info("="*80)
-    
-    logger.info("Preprocessing training data...")
+
+    logger.info("Preprocessing training data (Y z-scored within runs, including baseline TRs)...")
     X_train, Y_train = preprocess_data(X_train, Y_train, run_onsets_train, level_onsets_train, logger)
-    
+
     logger.info("Preprocessing test data...")
     X_test, Y_test = preprocess_data(X_test, Y_test, run_onsets_test, level_onsets_test, logger)
-    
+
     # ========================================================================
-    # APPLY DELAYS AND CREATE FEATURE SPACE ARRAYS
+    # MEAN-CENTER X (training active mean) AND APPLY DELAYS PER RUN
     # ========================================================================
     logger.info("")
     logger.info("="*80)
-    logger.info("APPLYING DELAYS AND CREATING FEATURE SPACE ARRAYS")
+    logger.info("MEAN-CENTERING AND APPLYING DELAYS PER RUN")
     logger.info("="*80)
-    
+
     params = PARAMETERS['variance_partitioning']
     delays = params['delays']
     n_features_original = X_train.shape[1]
-    
-    logger.info(f"Applying FIR delays: {delays}")
-    
-    # Apply StandardScaler (mean-centering only) and Delayer
+
+    # Fit centering on active training TRs only so post-drop active samples have mean ~0.
     scaler = StandardScaler(with_mean=True, with_std=False)
-    delayer = Delayer(delays=delays)
-    
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_train_delayed = delayer.fit_transform(X_train_scaled)
-    
-    X_test_scaled = scaler.transform(X_test)
-    X_test_delayed = delayer.transform(X_test_scaled)
-    
-    logger.info(f"  Train shape after delays: {X_train_delayed.shape}")
-    logger.info(f"  Test shape after delays: {X_test_delayed.shape}")
-    
-    # Expand feature space indices for delays
+    scaler.fit(X_train[active_mask_train])
+    X_train = scaler.transform(X_train)
+    X_test = scaler.transform(X_test)
+    logger.info(f"Mean-centering: fit on {int(active_mask_train.sum())} active training TRs; "
+                f"applied to full train ({len(X_train)}) and test ({len(X_test)})")
+
+    logger.info(f"Applying FIR delays per run: {delays}")
+    X_train_delayed = apply_delays_per_run(X_train, run_onsets_train, delays)
+    X_test_delayed = apply_delays_per_run(X_test, run_onsets_test, delays)
+    logger.info(f"  Train delayed shape (pre-baseline-drop): {X_train_delayed.shape}")
+    logger.info(f"  Test delayed shape (pre-baseline-drop): {X_test_delayed.shape}")
+
+    # ========================================================================
+    # DROP BASELINE TRs (after delays — preserves causal ITI context in lags)
+    # ========================================================================
+    logger.info("")
+    logger.info("="*80)
+    logger.info("DROPPING BASELINE TRs")
+    logger.info("="*80)
+
+    X_train_delayed, Y_train, run_onsets_train, session_onsets_train = drop_baseline_samples(
+        X_train_delayed, Y_train, run_onsets_train, session_onsets_train, active_mask_train, logger
+    )
+    X_test_delayed, Y_test, run_onsets_test, session_onsets_test = drop_baseline_samples(
+        X_test_delayed, Y_test, run_onsets_test, session_onsets_test, active_mask_test, logger
+    )
+
+    # ========================================================================
+    # SELECT CV SCHEME (after baseline drop so onsets index active samples)
+    # ========================================================================
+    logger.info("")
+    logger.info("="*80)
+    logger.info("CROSS-VALIDATION SCHEME")
+    logger.info("="*80)
+
+    if args.cv_scheme == 'loro':
+        cv_onsets_train = run_onsets_train
+        logger.info("Using LORO (Leave-One-Run-Out) CV")
+    elif args.cv_scheme == 'loso':
+        cv_onsets_train = session_onsets_train
+        logger.info("Using LOSO (Leave-One-Session-Out) CV")
+        logger.info(f"  Training sessions: {train_sessions}")
+    logger.info(f"  Number of CV folds: {len(cv_onsets_train)}")
+
+    # ========================================================================
+    # SPLIT DELAYED X INTO PER-SPACE ARRAYS
+    # ========================================================================
+    logger.info("")
+    logger.info("="*80)
+    logger.info("CREATING FEATURE SPACE ARRAYS")
+    logger.info("="*80)
+
     space_to_indices_delayed = expand_feature_space_indices_for_delays(
         space_to_indices, n_features_original, delays, logger
     )
-    
-    # Create feature space arrays
+
     X_train_list, space_names_ordered = create_feature_space_arrays(
         X_train_delayed, space_to_indices_delayed, feature_spaces_filtered, logger
     )
-    
+
     X_test_list, _ = create_feature_space_arrays(
         X_test_delayed, space_to_indices_delayed, feature_spaces_filtered, logger
     )

@@ -10,6 +10,7 @@ import nibabel as nib
 import pandas as pd
 from pathlib import Path
 from voxelwise_tutorials.utils import zscore_runs
+from voxelwise_tutorials.delayer import Delayer
 
 
 def get_fmri_filepath(subject: int, session: int, run: int, fmri_path: Path, pipeline: str) -> Path:
@@ -381,6 +382,112 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     logger.info(f"  Final Y shape: {Y.shape}, dtype: {Y.dtype}")
     
     return X, Y
+
+
+def compute_baseline_mask(X, run_onsets, logger=None, threshold=0.01):
+    """
+    Compute per-sample active-TR mask without dropping any data.
+
+    A TR is active if sum(|X[t]|) > threshold. ITI/baseline TRs (all features
+    near zero) are marked inactive.
+
+    Parameters:
+    -----------
+    X : array of shape (n_samples, n_features)
+    run_onsets : array of int (unused, kept for symmetry with filter_baseline_periods)
+    logger : logging.Logger, optional
+    threshold : float
+
+    Returns:
+    --------
+    active_mask : boolean array of shape (n_samples,)
+    """
+    activity = np.abs(X).sum(axis=1)
+    active_mask = activity > threshold
+    if logger is not None:
+        n_active = int(active_mask.sum())
+        n_total = len(active_mask)
+        logger.info(f"Baseline mask: {n_active}/{n_total} active TRs "
+                    f"({n_active / n_total * 100:.1f}%)")
+    return active_mask
+
+
+def apply_delays_per_run(X, run_onsets, delays):
+    """
+    Apply FIR delays independently within each run, preventing cross-run leakage.
+
+    Each run's delayed block uses zero-padding for delays beyond the run start.
+    Output column ordering matches voxelwise_tutorials.Delayer:
+    [d1_features | d2_features | ... | dN_features] (delay-major within run).
+
+    Parameters:
+    -----------
+    X : array of shape (n_samples, n_features)
+        Mean-centered feature matrix spanning all runs (no ITI dropped).
+    run_onsets : array of int
+        Cumulative TR indices at run starts; run k spans
+        [run_onsets[k], run_onsets[k+1]) or [run_onsets[-1], n_samples) for the last run.
+    delays : list of int
+
+    Returns:
+    --------
+    X_delayed : array of shape (n_samples, n_features * len(delays))
+    """
+    n_samples, n_features = X.shape
+    X_delayed = np.zeros((n_samples, n_features * len(delays)), dtype=X.dtype)
+
+    run_ends = list(run_onsets[1:]) + [n_samples]
+    for run_start, run_end in zip(run_onsets, run_ends):
+        delayer = Delayer(delays=delays)
+        X_delayed[run_start:run_end] = delayer.fit_transform(X[run_start:run_end])
+
+    return X_delayed
+
+
+def drop_baseline_samples(X_delayed, Y, run_onsets, session_onsets, active_mask, logger=None):
+    """
+    Apply baseline mask to delayed X and Y simultaneously; remap onsets.
+
+    Run and session onsets are recomputed in the active-sample index space using
+    the per-sample cumulative active count, so they remain valid fold boundaries
+    for CV after the drop.
+
+    Parameters:
+    -----------
+    X_delayed : array of shape (n_samples, n_features_delayed)
+    Y : array of shape (n_samples, n_voxels)
+    run_onsets : array of int (pre-drop)
+    session_onsets : array of int (pre-drop)
+    active_mask : boolean array of shape (n_samples,)
+    logger : logging.Logger, optional
+
+    Returns:
+    --------
+    X_active : array
+    Y_active : array
+    run_onsets_active : array of int
+    session_onsets_active : array of int
+    """
+    n_samples = X_delayed.shape[0]
+    cumulative_active = np.concatenate([[0], np.cumsum(active_mask.astype(np.int64))])
+
+    X_active = X_delayed[active_mask]
+    Y_active = Y[active_mask]
+
+    run_onsets_active = cumulative_active[np.asarray(run_onsets)]
+    session_onsets_active = cumulative_active[np.asarray(session_onsets)]
+
+    if logger is not None:
+        n_dropped = n_samples - int(active_mask.sum())
+        logger.info(f"Dropped {n_dropped} baseline TRs "
+                    f"({n_dropped / n_samples * 100:.1f}%) post-delay")
+        logger.info(f"  Active TRs: {int(active_mask.sum())}")
+        logger.info(f"  Active run_onsets ({len(run_onsets_active)}): "
+                    f"{run_onsets_active[:5].tolist()}{'...' if len(run_onsets_active) > 5 else ''}")
+        logger.info(f"  Active session_onsets ({len(session_onsets_active)}): "
+                    f"{session_onsets_active.tolist()}")
+
+    return X_active, Y_active, run_onsets_active, session_onsets_active
 
 
 def filter_baseline_periods(X, Y, run_onsets, session_onsets, logger, threshold=0.01):
