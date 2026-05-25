@@ -639,23 +639,30 @@ def extract_model_weights(model, logger):
     return weights
 
 
-def decompose_weights_by_feature_space(weights, space_to_indices_delayed, space_names_ordered, 
+def decompose_weights_by_feature_space(weights, space_to_indices_delayed, space_names_ordered,
                                        n_delays, logger):
     """
     Decompose full weight matrix into per-space weights.
-    
+
+    GroupRidgeCV.coef_ is laid out in space-major order: rows are concatenated in
+    the order of the X list passed to fit (himalaya/_sklearn_api.py:577-583). The
+    X list was built via X_delayed[:, space_to_indices_delayed[space]], so each
+    space block is delay-major internally: [d1_features, d2_features, ..., dN_features].
+
     Parameters:
     -----------
     weights : array of shape (n_features_delayed, n_voxels)
-        Full weight matrix from model
+        Full weight matrix from model, in space-major order matching the X list
     space_to_indices_delayed : dict
-        Keys are space names, values are arrays of indices in delayed feature matrix
+        Keys are space names, values are arrays of indices in delayed feature
+        matrix. Used here only to recover the number of features per space.
     space_names_ordered : list of str
-        Ordered list of feature space names
+        Ordered list of feature space names, matching the order X_list was passed
+        to GroupRidgeCV.fit
     n_delays : int
         Number of FIR delays
     logger : logging.Logger
-        
+
     Returns:
     --------
     weights_by_space : dict
@@ -665,34 +672,38 @@ def decompose_weights_by_feature_space(weights, space_to_indices_delayed, space_
         - 'weights_avg': array (n_space_features, n_voxels) - averaged across delays
     """
     logger.info("Decomposing weights by feature space...")
-    
+
     weights_by_space = {}
-    
+    n_voxels = weights.shape[1]
+    start = 0
+
     for space_name in space_names_ordered:
-        indices = space_to_indices_delayed[space_name]
-        n_features = len(indices) // n_delays
-        n_voxels = weights.shape[1]
-        
-        # Extract this space's weights
-        space_weights = weights[indices, :]
-        
-        # Reshape to (n_delays, n_features, n_voxels)
+        n_features_delayed = len(space_to_indices_delayed[space_name])
+        n_features = n_features_delayed // n_delays
+
+        space_weights = weights[start:start + n_features_delayed, :]
+        start += n_features_delayed
+
         space_weights_per_delay = space_weights.reshape(n_delays, n_features, n_voxels)
-        
-        # Average across delays
         space_weights_avg = space_weights_per_delay.mean(axis=0)
-        
+
         weights_by_space[space_name] = {
             'weights_all_delays': space_weights,
             'weights_per_delay': space_weights_per_delay,
             'weights_avg': space_weights_avg
         }
-        
+
         logger.info(f"  {space_name}:")
         logger.info(f"    Features: {n_features}")
         logger.info(f"    Weights shape (all delays): {space_weights.shape}")
         logger.info(f"    Weights shape (averaged): {space_weights_avg.shape}")
-    
+
+    if start != weights.shape[0]:
+        raise ValueError(
+            f"Weight decomposition consumed {start} rows but coef_ has {weights.shape[0]}; "
+            f"space_names_ordered must match the X list order passed to GroupRidgeCV.fit"
+        )
+
     return weights_by_space
 
 
