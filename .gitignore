@@ -1,4 +1,4 @@
-# Data 
+# Data
 /data/*
 !/data/raw/
 !/data/processed/
@@ -6,13 +6,55 @@
 /data/processed/*
 !/data/raw/.gitkeep
 !/data/processed/.gitkeep
+/inputs/
 
 # Analysis results and logs
 /results/*
+/logs/
 
-# old and scratch scripts
+# Old and scratch scripts
 /old_scripts/*
 /scripts/*/scratch*
+
+# Local documentation and publication work
+*.md
+!/README.md
+/docs/
+/writeup/
+/sources/
+*.pdf
+*.doc
+*.docx
+*.ppt
+*.pptx
+*.odt
+*.tex
+*.bib
+*.cls
+*.sty
+*.bst
+
+# Local Claude settings
+/.claude/
+
+# Shelved neural-geometry analysis (local only)
+/src/python/mario_encoding/geometry_config.py
+/src/python/mario_encoding/utils/contexts.py
+/src/python/mario_encoding/utils/geometry.py
+/src/python/mario_encoding/utils/hrf.py
+/src/python/mario_encoding/utils/rois.py
+/scripts/python/attach_level_labels.py
+/scripts/python/check_geometry_rois.py
+/scripts/python/compute_group_geometry.py
+/scripts/python/diagnose_bold_alignment.py
+/scripts/python/diagnose_decoding_floor.py
+/scripts/python/diagnose_trial_segmentation.py
+/scripts/python/fit_ccgp_geometry.py
+/scripts/python/select_ccgp_pairs.py
+/scripts/python/submit_geometry_jobs.py
+/scripts/bash/run_ccgp_geometry.sbatch
+/scripts/bash/run_decoding_floor.sbatch
+/tests/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
