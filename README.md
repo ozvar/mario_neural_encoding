@@ -4,20 +4,26 @@ Voxelwise encoding model analysis of fMRI data collected during Super Mario Bros
 
 ## Project Overview
 
-This project implements a voxelwise encoding model (VEM) framework to map behavioral and visual features during naturalistic gameplay to brain activity measured with fMRI. The analysis follows the methodology described in Dupré la Tour et al. (2025) and uses tools from the Gallant Lab's [voxelwise tutorials](https://gallantlab.org/voxelwise_tutorials).
+This project fits voxelwise banded ridge encoding models that map behavioural and visual features of naturalistic gameplay onto brain activity, then decomposes the held-out explained variance between the two feature spaces. The approach follows Dupré la Tour et al. (2025) and uses the Gallant Lab's [voxelwise tutorials](https://gallantlab.org/voxelwise_tutorials) stack.
 
-**Dataset:** [Courtois NeuroMod Mario dataset](https://docs.cneuromod.ca/) - publicly available via DataLad  
-**Task:** Super Mario Bros (NES) gameplay across multiple levels  
-**Subjects:** 3 participants (sub-01, sub-03, sub-05)  
-**Sessions:** 16-21 sessions per subject  
-**Acquisition:** TR = 1.49s, CIFTI format (fsLR 91k surface space)
+**Dataset:** [Courtois NeuroMod Mario dataset](https://docs.cneuromod.ca/), available via DataLad
+**Task:** Super Mario Bros (NES) gameplay across multiple levels
+**Subjects:** sub-01, 02, 03, 05, 06 (sub-04 has no data); 9 to 19 training sessions each, plus one held-out test session
+**Acquisition:** TR = 1.49 s, CIFTI in fsLR_32k (91,282 grayordinates)
+**fMRI preprocessing:** HCP pipeline (MSMAll-registered, high-pass filtered, ICA-FIX cleaned)
 
 ### Experimental Design
 
-- **Discovery phase:** Players repeatedly attempt each level until succeeding at least once (learning effects present)
-- **Practice phase:** Players play randomly selected levels they have already mastered (stable behavior, no learning effects)
+- **Discovery phase:** players repeatedly attempt each level until they succeed at least once (learning effects present)
+- **Practice phase:** players play randomly selected levels they have already mastered (stable behaviour)
 
-**Analysis strategy:** Train and test models exclusively on practice phase data to ensure stable brain-behavior mappings without confounds from learning.
+Models are trained and tested exclusively on practice-phase data, so brain-behaviour mappings are not confounded by learning.
+
+---
+
+## Documentation
+
+The README is the only tracked Markdown file. Detailed methods, pipeline and design documents are kept locally under `docs/` and are intentionally not included in the code repository.
 
 ---
 
@@ -25,31 +31,31 @@ This project implements a voxelwise encoding model (VEM) framework to map behavi
 
 ```
 mario_neural_encoding/
-├── inputs/                          # Processed behavioral data (gitignored)
-│   ├── per_session_combined_repvars_tsvs/
-│   ├── per_run_combined_repvars_and_bids_events/
-│   ├── per_run_pruned_features/
-│   ├── per_run_downsampled_to_TR/
-│   └── practice_phase_metadata/
-├── results/
-│   ├── models/                      # Fitted encoding models (.pkl)
-│   ├── cv_scores/                   # Cross-validation R² scores
-│   ├── figures/                     # Output visualizations
-│   └── logs/                        # Processing logs
-├── scripts/python/                  # Preprocessing and analysis scripts
-├── src/python/mario_encoding/       # Core utilities package
-├── notebooks/                       # Analysis notebooks
-├── environment.yml                  # Conda environment specification
-├── config.py                        # Paths and parameters configuration
-└── README.md                        # This file
+├── docs/                            # Local documentation (gitignored)
+├── inputs/                          # Processed behavioural data (gitignored)
+├── results/                         # Model outputs, figures, logs (gitignored; most live on the cluster)
+├── scripts/
+│   ├── python/                      # Pipeline, analysis, diagnostics, figures
+│   └── bash/                        # SLURM submission scripts
+├── src/python/mario_encoding/       # Core package (config, data loading, model fitting)
+├── environment.yml
+└── README.md
 ```
+
+Script families in `scripts/python/`:
+
+- `process_*`, `merge_*`, `downsample_*`, `create_practice_phase_metadata.py`: behavioural preprocessing (pipeline steps 1-5)
+- `fit_*`, `submit_*`: model fitting and job submission
+- `compute_*`: significance testing, group statistics, derived measures
+- `check_*`, `diagnose_*`, `inspect_*`: data and pipeline checks
+- `plot_*`, `create_*_cifti.py`, `export_*`: figures and brain maps
+- `*neurosynth*`: Neurosynth follow-up analyses
 
 ### External Data Repositories (sibling directories)
 
-- `mario.replays/` - Raw behavioral data (gamelogs) and extracted replay variables
-- `mario.scenes/` - Scene-level perceptual features and metadata
-- `mario.annotations/` - BIDS-format event annotations with temporal alignment
-- `mario.fmriprep/` - Preprocessed fMRI data (CIFTI format)
+- `mario.replays/`: raw behavioural data (gamelogs) and extracted replay variables
+- `mario.scenes/`: scene-level perceptual features and metadata
+- `mario.annotations/`: BIDS-format event annotations with temporal alignment
 
 ---
 
@@ -75,371 +81,97 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 ### 4. Install the mario_encoding package
 ```bash
-pip install -e src/python/
+pip install -e .
 ```
 
 ### 5. Configure paths
-Edit `src/python/mario_encoding/config.py` to point to your data directories if they differ from the default sibling directory structure.
+Edit `src/python/mario_encoding/config.py` to point at your data directories if they differ from the default sibling-directory layout.
 
 ### Computational Requirements
+
 - **GPU:** CUDA-enabled GPU required for practical runtimes
-- **Memory:** ~16-32GB GPU memory recommended for 91k grayordinates
-- **Backend:** himalaya with `torch_cuda` backend for batched processing
-- **Solver choice:** Use `KernelRidgeCV` (not `RidgeCV`) to access batch size arguments for GPU memory management
+- **Memory:** 16-32 GB GPU memory recommended for 91k grayordinates
+- **Backend:** himalaya with the `torch_cuda` backend
+- **Batching:** fits run in 2000-target batches (`n_targets_batch` in `config.py`) to bound GPU memory
 
 ---
 
-## Preprocessing Pipeline
+## Pipeline
 
-The preprocessing pipeline transforms raw frame-by-frame behavioral data into features aligned with fMRI TRs, ready for encoding model analysis.
-
-### Pipeline Overview
+Full commands are in `docs/pipeline.md`. In outline:
 
 ```
 Raw replay JSONs (60 fps)
-    ↓
-[1] process_replay_sessions.py → Session-level combined replay variables
-    ↓
-[2] merge_bids_events_and_repvars.py → Run-level data with BIDS events merged
-    ↓
-[3] process_pruned_features.py → Pruned feature set with scene features and engineered variables
-    ↓
-[4] downsample_to_TR.py → Downsampled to TR (1.49s)
-    ↓
-[5] create_practice_phase_metadata.py → CV metadata for practice phase runs
-    ↓
-[6] fit_encoding_model.py → Fit ridge regression models
-    ↓
-[Post-fitting analysis scripts] → Significance testing, weight extraction, CIFTI creation
+  [1] process_replay_sessions.py                 -> session-level replay variables
+  [2] merge_bids_events_and_repvars.py           -> run-level data with BIDS events
+  [3] merge_cleaned_behav_and_scene_features.py  -> engineered, pruned features
+  [4] downsample_behav_data_to_TR.py             -> one row per TR (1.49 s)
+  [5] create_practice_phase_metadata.py          -> practice-phase run and level onsets
+  [6] fit_variance_partitioning.py               -> per-subject model fits
+  [7-9] group average, per-subject permutation significance, group significance
+  [10-11] PCA on model weights (deferred; see docs/methods_full.md)
+  [12-13] CIFTI maps and figures
 ```
 
-### Step-by-Step Execution
+Steps 6, 8 and 10-12 run on a SLURM cluster via the wrappers in `scripts/bash/`.
 
-All scripts are located in `scripts/python/` and should be run from the project root:
+### Model
 
-#### Step 1: Merge replay variables per session
-```bash
-python scripts/python/process_replay_sessions.py
-```
-**Input:** Frame-by-frame replay variables (JSONs) for each level repetition  
-**Output:** `inputs/per_session_combined_repvars_tsvs/`  
-**Purpose:** Consolidate all replay data for each session into single TSV files
+Banded ridge regression (himalaya `GroupRidgeCV`) with a separate regularisation parameter per feature space, so the 6-feature motor space and the ~38-feature scene space each get a penalty on their own scale. FIR delays of 1 to 5 TRs act as a flexible HRF basis. Hyperparameters are selected by random search (100 draws) under leave-one-session-out cross-validation on the training sessions; prediction accuracy is evaluated on a genuinely held-out session. Held-out variance is decomposed per feature space with the product measure of Dupré la Tour et al. (2022), which needs only the single joint fit.
 
-#### Step 2: Merge BIDS events with replay variables
-```bash
-python scripts/python/merge_bids_events_and_repvars.py
-```
-**Input:** Session-level replay variables + BIDS event annotations  
-**Output:** `inputs/per_run_combined_repvars_and_bids_events/`  
-**Purpose:** Align behavioral data with fMRI runs and add event markers (coins, deaths, etc.)
+Preprocessing order inside the fit is load-bearing: features are mean-centred (not z-scored), FIR delays are applied per run, and only then are inter-trial-interval TRs dropped. `docs/methods_full.md` gives the reasoning and the consequences of getting the order wrong.
 
-#### Step 3: Engineer and prune features
-```bash
-python scripts/python/process_pruned_features.py
-```
-**Input:** Run-level combined data + scene perceptual features  
-**Output:** `inputs/per_run_pruned_features/`  
-**Purpose:** 
-- Merge scene-level perceptual features from mastersheet
-- One-hot encode categorical variables (powerstate, movement direction)
-- Extend event durations to match neural response timescales
-- Create kill event features from RAM variables
-- Drop redundant/unused columns
+### Significance
 
-#### Step 4: Downsample to TR
-```bash
-python scripts/python/downsample_to_TR.py
-```
-**Input:** Frame-level features (~60 fps)  
-**Output:** `inputs/per_run_downsampled_to_TR/`  
-**Purpose:** Aggregate framewise data into TR windows (1.49s)
-- Binary features (events, buttons, states) → averaged (proportion active)
-- Continuous features (score, coins, enemies) → averaged within TR
-- Adds `TR_index` and `TR_time` columns for alignment
-- Fills gaps (ITI, post-task baseline) with zeros to match fMRI acquisition length
-
-#### Step 5: Generate CV metadata for practice phase
-```bash
-python scripts/python/create_practice_phase_metadata.py
-```
-**Input:** BIDS events (to identify practice vs discovery phase) + downsampled features  
-**Output:** `inputs/practice_phase_metadata/`  
-**Purpose:** Create metadata for cross-validation
-- Identify runs in practice phase (stable behavior, no learning effects)
-- Compute `run_onsets` arrays for leave-one-run-out CV
-- Compute `level_onsets` arrays for within-level z-scoring (if needed)
-- Store run-level statistics (n_TRs, n_samples)
-
----
-
-## Encoding Model Fitting
-
-### Overview
-
-The encoding model fitting pipeline trains voxelwise ridge regression models with FIR delays to predict fMRI responses from behavioral features. Models are trained on multiple sessions using leave-one-run-out cross-validation and evaluated on held-out test sessions.
-
-### Preprocessing Steps (Applied in Order)
-
-The fitting pipeline applies several preprocessing steps in a specific order to ensure valid cross-validation:
-
-1. **Baseline period filtering** (optional, currently applied)
-   - Removes TRs where all behavioral features are near-zero (`sum(|features|) < threshold`)
-   - Rationale: Avoids gameplay-vs-rest confounds by excluding ITI/baseline periods
-   - Applied separately to train and test sets
-
-2. **Zero-variance feature filtering**
-   - Identifies features with zero variance across entire training set
-   - Removes these features from both train and test sets
-   - Rationale: Zero-variance features provide no information for prediction
-
-3. **Zero-variance voxel filtering**
-   - Identifies voxels with zero variance in ANY training run
-   - Removes these voxels from both train and test sets
-   - Rationale: Voxels with zero variance in any run will cause issues during within-run z-scoring
-
-4. **fMRI z-scoring (within runs)**
-   - Z-scores fMRI responses (Y) separately within each run
-   - Rationale: Removes run-level drift and offset while preserving within-run variability (Gallant Lab standard)
-
-5. **Feature mean-centering only**
-   - Features (X) are mean-centered via `StandardScaler(with_mean=True, with_std=False)`
-   - **NOT z-scored**: Preserves meaningful relative scales between features
-   - Rationale: Rare events shouldn't be artificially amplified; relative feature magnitudes are informative
-
-6. **FIR delay application**
-   - Applied via `Delayer` within sklearn pipeline (after StandardScaler, before ridge regression)
-   - Creates lagged copies of features at delays [1, 2, 3, 4] TRs (~1.5-6 seconds)
-   - Rationale: Captures hemodynamic response function (HRF) lag
-
-**Critical:** Delayer is applied WITHIN the pipeline, not before creating the CV object, to avoid data leakage between folds.
-
-### Model Architecture
-
-- **Model type:** Ridge regression with L2 regularization
-- **FIR delays:** [1, 2, 3, 4] TRs (captures HRF lag of ~1.5-6 seconds post-stimulus)
-- **Regularization:** 30 alpha values on log scale from 10^0 to 10^6
-- **Cross-validation:** Leave-one-run-out within training sessions
-- **Solver:** Himalaya's `RidgeCV` with `torch_cuda` backend for GPU acceleration
-  - Note: `KernelRidgeCV` provides batch size control for GPU memory management
-  - `RidgeCV` is optimal when n_samples > n_features but lacks batch arguments
-  - For large datasets, use `Y_in_cpu` and `force_cpu` arguments to manage memory
-
-### Train/Test Session Split
-
-Models are trained on multiple sessions and evaluated on held-out sessions:
-- **Training sessions:** e.g., sessions 6-10 (concatenated)
-- **Test sessions:** e.g., sessions 11-12 (held-out)
-- **Within training:** Leave-one-run-out CV to select regularization per voxel
-- **Generalization test:** Final evaluation on held-out sessions
-
-This design tests whether brain-behavior mappings generalize to new data from different days.
-
-### Usage
-
-```bash
-# Example: Train on sessions 6-10, test on session 11
-python scripts/python/fit_encoding_model.py \
-    --subject 1 \
-    --session-range 6 10 \
-    --test-sessions 11 \
-    --backend torch_cuda
-
-# Example: Train on specific sessions, test on multiple sessions
-python scripts/python/fit_encoding_model.py \
-    --subject 1 \
-    --sessions 6 7 8 \
-    --test-sessions 9 10 \
-    --backend torch_cuda
-```
-
-### Outputs
-
-All outputs are saved to `results/models/` and `results/cv_scores/`:
-
-- `sub-{XX}_train-ses-{XXX}-{XXX}_test-ses-{XXX}_model.pkl`
-  - Fitted sklearn pipeline (StandardScaler → Delayer → RidgeCV)
-  
-- `sub-{XX}_train-ses-{XXX}-{XXX}_test-ses-{XXX}_cv_scores.npy`
-  - Cross-validation R² scores (shape: n_voxels)
-  - Performance on training data using leave-one-run-out CV
-  
-- `sub-{XX}_train-ses-{XXX}-{XXX}_test-ses-{XXX}_test_scores.npy`
-  - Test set R² scores (shape: n_voxels)
-  - Performance on held-out test sessions
-  
-- `sub-{XX}_train-ses-{XXX}-{XXX}_test-ses-{XXX}_best_alphas.npy`
-  - Selected regularization parameter per voxel (shape: n_voxels)
-  
-- `sub-{XX}_train-ses-{XXX}-{XXX}_test-ses-{XXX}_voxel_mask.npy`
-  - Boolean mask (shape: 91282) indicating which grayordinates were kept after zero-variance filtering
-  
-- `sub-{XX}_train-ses-{XXX}-{XXX}_test-ses-{XXX}_feature_mask.npy`
-  - Boolean mask indicating which features were kept after zero-variance filtering
-  
-- `sub-{XX}_train-ses-{XXX}-{XXX}_test-ses-{XXX}_feature_names.json`
-  - Original feature names and which features survived filtering
-
----
-
-## Post-Fitting Analysis (WIP)
-
-### Significance Testing
-
-**Script:** `compute_voxel_significance.py`  
-**Status:** Work in progress
-
-Computes p-values for each voxel to test whether prediction accuracy is significantly above chance. Two methods available:
-- **Parametric test:** Uses Fisher's z-transform on correlations (fast)
-- **Permutation test:** Builds null distribution by permuting (robust, slow)
-
-Following Huth et al. (2012), voxels with p < 0.05 (uncorrected) are typically selected for further analysis.
-
-### Weight Extraction
-
-**Script:** `extract_model_weights.py`  
-**Status:** Work in progress
-
-Extracts regression weights from fitted models for interpretation. Weights reveal which features drive predictions for each voxel.
-
-### Feature PCA
-
-**Script:** `compute_feature_pca.py`  
-**Status:** Work in progress
-
-Performs PCA on regression weights across voxels to identify principal components of feature tuning. Useful for discovering interpretable feature dimensions.
-
-### CIFTI Creation
-
-**Script:** `create_model_cifti.py`  
-**Status:** Work in progress
-
-Converts model results (R² scores, weights) into CIFTI brain maps for visualization on cortical surface.
-
-**Key steps:**
-1. Load saved results (CV scores, test scores, voxel mask)
-2. Create full-size arrays (91282 grayordinates) with zeros for filtered voxels
-3. Insert valid voxel data using voxel mask
-4. Load template CIFTI file to get header/geometry
-5. Create new CIFTI with result data and template geometry
-6. Save as `.dscalar.nii` (scalar data) or `.dtseries.nii` (timeseries)
-
-**Usage:**
-```bash
-python scripts/python/create_model_cifti.py \
-    --subject 1 \
-    --train-sessions 6 7 8 9 10 \
-    --test-sessions 11 \
-    --metric cv_scores
-```
-
-**Outputs:** CIFTI files viewable in Connectome Workbench or other neuroimaging software
+Per-voxel block-permutation test on held-out predictions, following LeBel et al. (2023), with BH-FDR per statistic. At group level the criterion is a partial conjunction: a voxel counts if it is individually significant in at least 4 of the 5 subjects. Fixed-effects (Stouffer) pooling is deprecated; see `docs/methods_full.md`.
 
 ---
 
 ## Feature Engineering Details
 
 ### Categorical Encodings
-- **Powerstate:** One-hot encoded (big, fire, star; small is reference)
-- **Scrolling:** Binarized (screen scrolling vs. static)
-- **Powerup visibility:** Binarized (visible vs. not visible)
-- **Jump state:** Binarized (airborne vs. grounded)
-- **Movement direction:** One-hot encoded (left, right; stationary is reference)
+- **Powerstate:** one-hot encoded (big, fire, star; small is the reference)
+- **Scrolling:** binarised (screen scrolling vs static)
+- **Powerup visibility:** binarised (visible vs not)
+- **Jump state:** binarised (airborne vs grounded)
+- **Movement direction:** one-hot encoded (left, right; stationary is the reference)
 
 ### Event Duration Extensions
-Events are extended by specified frame counts to capture neural response timescales:
-- Coin collected: 30 frames (~0.5s)
-- Brick smashed: 30 frames (~0.5s)
-- Powerup collected: 114 frames (~1.9s)
-- Hit/powerup lost: 35 frames (~0.6s)
-- Hit/life lost: 180 frames (~3.0s)
+Events are extended by fixed frame counts so they span a plausible neural response:
+- Coin collected: 30 frames (~0.5 s)
+- Brick smashed: 30 frames (~0.5 s)
+- Powerup collected: 114 frames (~1.9 s)
+- Hit, powerup lost: 35 frames (~0.6 s)
+- Hit, life lost: 180 frames (~3.0 s)
 
 ### Kill Events
-Created from RAM variables (`enemy_kill30-34`):
-- `event_kill_stomp` (value = 4)
-- `event_kill_impact` (value = 34)
-- `event_kill_kick` (value = 132)
+Derived from RAM variables (`enemy_kill30-34`):
+- `event_kill_stomp` (value 4)
+- `event_kill_impact` (value 34)
+- `event_kill_kick` (value 132)
 
 ### Scene Features
-Merged from scenes mastersheet (`mario.scenes/sourcedata/scenes_info/scenes_mastersheet.csv`):
-- Perceptual complexity metrics
-- Spatial layout properties
-- Object density statistics
+Merged from the scenes mastersheet (`mario.scenes/sourcedata/scenes_info/scenes_mastersheet.csv`): perceptual complexity metrics, spatial layout properties and object density statistics.
 
----
-
-## Methodological Choices
-
-### Why not z-score behavioral features?
-
-Features are mean-centered but NOT z-scored (standardized). 
-
-**Rationale:** Preserving relative feature scales is important for interpretation. Z-scoring would artificially amplify rare events (e.g., collecting a star powerup) to have the same variance as common events (e.g., moving right), potentially distorting their true relationship to neural responses. The Gallant Lab standard approach is to z-score only fMRI responses (Y) within runs, while leaving features (X) raw or mean-centered only.
-
-### Why z-score fMRI within runs?
-
-fMRI responses (Y) are z-scored separately within each run.
-
-**Rationale:** Removes run-level drift and baseline offset while preserving within-run variability. This is the Gallant Lab standard preprocessing approach and ensures that model fitting focuses on within-run response patterns rather than run-to-run baseline differences.
-
-### Why filter baseline periods?
-
-TRs where behavioral features are near-zero (ITI, post-task rest) are optionally removed.
-
-**Rationale:** Including baseline periods could introduce gameplay-vs-rest confounds rather than capturing feature-specific selectivity. This step ensures the model learns from active gameplay data. Note: This is currently applied but could be made optional in future versions.
-
-### Why filter zero-variance features and voxels?
-
-Features with zero variance across training data and voxels with zero variance in any training run are removed.
-
-**Rationale:** Zero-variance features provide no information for prediction. Zero-variance voxels in any run will cause numerical issues during within-run z-scoring. These filtering steps are applied to training data and the resulting masks are applied to test data to maintain valid train/test separation.
-
-### Why use separate train and test sessions?
-
-Models are trained on multiple sessions and evaluated on completely held-out sessions from different days.
-
-**Rationale:** This tests whether brain-behavior mappings generalize across time and provides a more rigorous validation than leave-one-run-out CV alone. It mimics real prediction scenarios where models must generalize to new data.
+Zero-variance filtering during fitting drops a few rare scene features per subject, so the surviving scene space is 37-38 features and is not identical across subjects. Any cross-subject analysis over individual features must align them by name.
 
 ---
 
 ## Configuration
 
-Key parameters in `src/python/mario_encoding/config.py`:
-
-```python
-PARAMETERS = {
-    'TR': 1.49,                                    # fMRI repetition time (seconds)
-    'frame_rate': 60.099826520671044,              # Game frame rate (fps)
-    'event_frame_duration_dict': {                 # Event extension durations
-        'event_coin_collected': 30,
-        'event_brick_smashed': 30,
-        'event_powerup_collected': 114,
-        'event_hit_powerup_lost': 35,
-        'event_hit_life_lost': 180
-    },
-    'encoding_model': {
-        'delays': [1, 2, 3, 4],                   # FIR delays (TRs)
-        'alpha_min': 0,                            # log10(alpha_min)
-        'alpha_max': 6,                            # log10(alpha_max)
-        'n_alphas': 30,                            # Number of alpha values
-        'solver_params': {
-            'n_iter': 1000,
-            'tol': 1e-4
-        }
-    }
-}
-```
+All paths, feature-space definitions and model hyperparameters live in `src/python/mario_encoding/config.py`; subject and session groupings live in `src/python/mario_encoding/group_configs.py`. Treat those files as authoritative rather than copying values into documentation.
 
 ---
 
 ## Data Quality Checks
 
-Validation scripts in `scripts/python/`:
-- `check_behav_data_files_exist.py` - Verify behavioral data integrity
-- `check_fmri_data_files_exist.py` - Verify fMRI data availability
-- `check_behav_fmri_alignment.py` - Validate temporal alignment
-- `check_fmri_preprocessed_behav_files.py` - Check run-level file matching
+Validation scripts in `scripts/python/`, for example:
+- `check_behav_data_files_exist.py`: behavioural data integrity
+- `check_fmri_data_files_exist.py`: fMRI data availability
+- `check_behav_fmri_alignment.py`: temporal alignment
+- `check_feature_correlations.py`: cross-feature and cross-space correlation structure
 
-Logs are saved to `results/logs/`.
+Logs are written to `results/logs/`.
 
 ---
 
@@ -447,7 +179,9 @@ Logs are saved to `results/logs/`.
 
 **Methodology:**
 - Dupré la Tour, T., Visconti di Oleggio Castello, M., & Gallant, J.L. (2025). The Voxelwise Encoding Model framework: A tutorial introduction to fitting encoding models to fMRI data. *Imaging Neuroscience*, 3. https://doi.org/10.1162/imag_a_00575
+- Dupré la Tour, T., Eickenberg, M., Nunez-Elizalde, A.O., & Gallant, J.L. (2022). Feature-space selection with banded ridge regression. *NeuroImage*, 264, 119728.
 - Huth, A.G., Nishimoto, S., Vu, A.T., & Gallant, J.L. (2012). A continuous semantic space describes the representation of thousands of object and action categories across the human brain. *Neuron*, 76(6), 1210-1224.
+- LeBel, A., Wagner, L., Jain, S., et al. (2023). A natural language fMRI dataset for voxelwise encoding models. *Scientific Data*, 10, 555.
 
 **Dataset:**
 - Boyle, J.A., Pinsard, B., Boukhdhir, A., et al. (2020). The Courtois project on neural modelling. *arXiv*. https://arxiv.org/abs/2009.13276
