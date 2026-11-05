@@ -70,7 +70,7 @@ PARAMETERS = {
         'solver_params': {
             'n_iter': 100,  # Random search iterations
             'n_targets_batch': 2000,  # GPU memory management
-            'alphas': np.logspace(1, 20, 20)
+            'alphas': np.logspace(-1, 11, 20)
         }
     }
 }

@@ -373,10 +373,10 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     
     logger.info("  Z-scoring fMRI within runs")
     Y = zscore_runs(Y, run_onsets)
-    
-    # Handle NaNs
-    X = np.nan_to_num(X)
-    Y = np.nan_to_num(Y)
+
+    # In-place NaN replacement avoids a Y-sized transient copy at peak memory.
+    np.nan_to_num(X, copy=False)
+    np.nan_to_num(Y, copy=False)
     
     logger.info(f"  Final X shape: {X.shape}, dtype: {X.dtype}")
     logger.info(f"  Final Y shape: {Y.shape}, dtype: {Y.dtype}")

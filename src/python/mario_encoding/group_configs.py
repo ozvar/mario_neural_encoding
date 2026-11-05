@@ -108,38 +108,35 @@ GROUP_N5_PRIMARY = {
       "subject": 1,
       "train_sessions": [7, 8, 9, 10, 12, 14, 15, 16, 17, 18, 19],
       "test_sessions": [20],
-      "experiment_id": "20260511_221922"
+      "experiment_id": "20260525_110607"
     },
     {
       "subject": 2,
       "train_sessions": [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22],
       "test_sessions": [23],
-      "experiment_id": "20260430_210049"
+      "experiment_id": "20260525_123922"
     },
     {
       "subject": 3,
       "train_sessions": [11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29],
       "test_sessions": [30],
-      "experiment_id": "20260428_190303"
+      "experiment_id": "20260525_110241"
     },
     {
       "subject": 5,
       "train_sessions": [9, 10, 11, 12, 13, 14, 15, 16, 17],
       "test_sessions": [18],
-      "experiment_id": "20260427_150334"
+      "experiment_id": "20260526_115436"
     },
     {
       "subject": 6,
       "train_sessions": [7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23],
       "test_sessions": [24],
-      "experiment_id": "20260518_111913"
+      "experiment_id": "20260525_110206"
     }
   ],
   "metrics_to_average": [
     "R2_full",
-    "R2_unique_motor",
-    "R2_unique_scene",
-    "R2_shared",
     "product_measure_motor",
     "product_measure_scene"
   ],
@@ -183,6 +180,7 @@ GROUP_N5_PRIMARY = {
       "Bonus zone",
       "Waterworld",
       "Checkpoint",
+      # Change these to use updated annotations
       "mario_big",
       "mario_fire",
       "mario_star",
