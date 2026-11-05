@@ -30,6 +30,33 @@ GROUP_REGISTRY = {
 VP_METRICS_REQUIRED = ['R2_full', 'R2_unique_motor', 'R2_unique_scene', 'R2_shared']
 VP_METRICS_OPTIONAL = ['product_measure_motor', 'product_measure_scene']
 
+# Per-subject significance maps written by compute_vp_significance_permutation.py
+SIG_PER_SUBJECT_KEYS = [
+    ('sig_r_full_fdr_q05', 'r_full_sig_q05'),
+    ('sig_pm_motor_fdr_q05', 'pm_motor_sig_q05'),
+    ('sig_pm_scene_fdr_q05', 'pm_scene_sig_q05'),
+]
+
+# Group significance maps written by compute_group_significance.py (already in 91k space)
+GROUP_SIG_SCALAR_KEYS = [
+    'r_full_Z_group', 'r_full_p_fdr_group',
+    'pm_motor_Z_group', 'pm_motor_p_fdr_group',
+    'pm_scene_Z_group', 'pm_scene_p_fdr_group',
+    'r_full_mean_observed', 'pm_motor_mean_observed', 'pm_scene_mean_observed',
+]
+GROUP_SIG_BOOL_KEYS = [
+    'r_full_sig_group_fdr_q05',
+    'pm_motor_sig_group_fdr_q05',
+    'pm_scene_sig_group_fdr_q05',
+    'r_full_sig_conj',
+    'pm_motor_sig_conj',
+    'pm_scene_sig_conj',
+    'r_full_sig_conj_min4',
+    'pm_motor_sig_conj_min4',
+    'pm_scene_sig_conj_min4',
+]
+GROUP_SIG_CLASSIFICATION_KEY = 'vp_classification_stouffer'
+
 
 def setup_logging(log_path: Path) -> logging.Logger:
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -123,6 +150,80 @@ def create_vp_ciftis(subject: int, train_sessions: list[int], test_sessions: lis
     return created
 
 
+def create_sig_ciftis_subject(subject: int, train_sessions: list[int],
+                              test_sessions: list[int], experiment_id: str,
+                              vp_results_path: Path, cifti_output_dir: Path,
+                              fmri_path: Path, pipeline: str,
+                              logger: logging.Logger) -> list[Path]:
+    """Per-subject significance CIFTIs (binary masks per stat). Silent skip if absent."""
+    vp_dir = get_vp_dir(subject, train_sessions, test_sessions, experiment_id, vp_results_path)
+    sig_file = vp_dir / 'significance.npz'
+    mask_file = vp_dir / 'valid_voxels_mask.npy'
+    if not sig_file.exists():
+        logger.info(f"  significance.npz absent ({sig_file}) -- skipping per-subject sig CIFTIs")
+        return []
+
+    sig = np.load(sig_file, allow_pickle=False)
+    mask = np.load(mask_file)
+    template_path = get_template_cifti_path(subject, fmri_path, pipeline)
+    dataset_label = get_dataset_label(subject, train_sessions, test_sessions)
+    prefix = f'{dataset_label}_{experiment_id}'
+
+    created = []
+    for npz_key, cifti_name in SIG_PER_SUBJECT_KEYS:
+        if npz_key not in sig.files:
+            logger.info(f"  '{npz_key}' not in significance.npz -- skipping")
+            continue
+        out_path = cifti_output_dir / f'{prefix}_{cifti_name}.dscalar.nii'
+        write_cifti_scalar(
+            expand_to_fullbrain(sig[npz_key].astype(np.float32), mask),
+            template_path, out_path, cifti_name, logger,
+        )
+        created.append(out_path)
+    return created
+
+
+def create_group_sig_ciftis(group_cfg: dict, vp_results_path: Path,
+                            cifti_output_dir: Path, fmri_path: Path,
+                            pipeline: str, logger: logging.Logger) -> list[Path]:
+    """Group-level significance CIFTIs. Arrays are already in full 91k space."""
+    group_label = group_cfg['output_label']
+    sig_file = vp_results_path / 'group_average' / group_label / 'group_significance.npz'
+    if not sig_file.exists():
+        logger.info(f"  group_significance.npz absent ({sig_file}) -- skipping group sig CIFTIs")
+        return []
+
+    sig = np.load(sig_file, allow_pickle=False)
+    template_subject = group_cfg['subjects'][0]['subject']
+    template_path = get_template_cifti_path(template_subject, fmri_path, pipeline)
+
+    created = []
+    for key in GROUP_SIG_SCALAR_KEYS:
+        if key not in sig.files:
+            continue
+        data = sig[key].astype(np.float32)
+        out_path = cifti_output_dir / f'group_{key}.dscalar.nii'
+        write_cifti_scalar(data, template_path, out_path, key, logger)
+        created.append(out_path)
+
+    for key in GROUP_SIG_BOOL_KEYS:
+        if key not in sig.files:
+            continue
+        data = sig[key].astype(np.float32)
+        out_path = cifti_output_dir / f'group_{key}.dscalar.nii'
+        write_cifti_scalar(data, template_path, out_path, key, logger)
+        created.append(out_path)
+
+    if GROUP_SIG_CLASSIFICATION_KEY in sig.files:
+        data = sig[GROUP_SIG_CLASSIFICATION_KEY].astype(np.float32)
+        out_path = cifti_output_dir / f'group_{GROUP_SIG_CLASSIFICATION_KEY}.dscalar.nii'
+        write_cifti_scalar(data, template_path, out_path,
+                           GROUP_SIG_CLASSIFICATION_KEY, logger)
+        created.append(out_path)
+
+    return created
+
+
 def create_pca_ciftis(subject: int, group_label: str, pca_output_dir: Path,
                       cifti_output_dir: Path, fmri_path: Path, pipeline: str,
                       logger: logging.Logger) -> list[Path]:
@@ -165,6 +266,13 @@ def process_subject(subject_cfg: dict, group_label: str | None,
         vp_results_path, cifti_output_dir, fmri_path, pipeline, logger,
     )
     logger.info(f"sub-{subject:02d}: created {len(vp_created)} VP CIFTIs")
+
+    logger.info(f"sub-{subject:02d}: creating significance CIFTIs (if available)")
+    sig_created = create_sig_ciftis_subject(
+        subject, train_sessions, test_sessions, experiment_id,
+        vp_results_path, cifti_output_dir, fmri_path, pipeline, logger,
+    )
+    logger.info(f"sub-{subject:02d}: created {len(sig_created)} significance CIFTIs")
 
     if pca_output_dir is not None:
         logger.info(f"sub-{subject:02d}: creating PCA score CIFTIs")
@@ -217,6 +325,14 @@ def main() -> None:
                 subject_cfg, group_label, pca_output_dir, cifti_output_dir,
                 vp_results_path, fmri_path, pipeline, logger,
             )
+
+        logger.info("")
+        logger.info("Group-level significance CIFTIs (if available)")
+        group_sig_created = create_group_sig_ciftis(
+            group_cfg, vp_results_path, cifti_output_dir,
+            fmri_path, pipeline, logger,
+        )
+        logger.info(f"Created {len(group_sig_created)} group significance CIFTIs")
 
     else:
         if not all([args.train_sessions, args.test_sessions, args.experiment_id]):

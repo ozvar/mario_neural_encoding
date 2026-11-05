@@ -72,7 +72,18 @@ PARAMETERS = {
             'n_targets_batch': 2000,  # GPU memory management
             'alphas': np.logspace(-1, 11, 20)
         }
-    }
+    },
+    # Block-permutation significance testing (LeBel et al. 2023):
+    # shuffle blocks of `block_size` TRs within each test run, recompute
+    # correlation / product measure against the existing predictions, repeat
+    # `n_perm` times to build a per-voxel null distribution.
+    'permutation': {
+        'n_perm': 10000,
+        'block_size': 10,  # TRs; LeBel-matched
+        'seed': 42,
+        'fdr_alpha': 0.05,
+        'min_subjects_valid': 4,  # voxel must be valid in >= this many subjects for group test
+    },
 }
 
 FEATURE_SPACES = {

@@ -8,13 +8,25 @@ for specified metrics.
 Output structure:
     {PATHS['variance_partitioning']}/
         group_average/
-            {experiment_id}/
+            {experiment_id}/                     # timestamped run record
                 config.json
                 R2_scores.npz
                 group_metadata.json
                 group_R2_full.dscalar.nii
-                group_R2_unique_motor.dscalar.nii
+                group_product_measure_motor.dscalar.nii
                 ...
+    {PATHS['figures']}/
+        ciftis/
+            {output_label}/                      # stable path consumers resolve
+                group_R2_full_mean.dscalar.nii
+                group_product_measure_motor_mean.dscalar.nii
+                ...
+
+The `_mean` copies exist because summarize_r2_by_network.py and
+plot_pycortex_surfaces.py look up `group_{metric}_mean.dscalar.nii` by name in
+the group CIFTI directory. They carry a matching `{metric}_mean` internal map
+name. Before 2025-12 this was the only naming the script emitted; the
+timestamped copies use the bare metric name.
 """
 import argparse
 import json
@@ -326,28 +338,49 @@ def save_group_results(group_averages, output_dir, config, subjects_metadata, lo
         json.dump(metadata, f, indent=2)
 
 
-def create_group_ciftis(group_averages, output_dir, template_cifti_path, logger):
+def write_cifti_map(values, map_name, output_path, brain_model_axis, logger):
+    """Write a (91282,) array as a single-map CIFTI dscalar."""
+    scalar_axis = ScalarAxis([map_name])
+    header = Cifti2Header.from_axes((scalar_axis, brain_model_axis))
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    Cifti2Image(values[np.newaxis, :], header=header).to_filename(str(output_path))
+    logger.info(f"  Saved: {output_path}")
+
+
+def create_group_ciftis(group_averages, output_dir, template_cifti_path, logger,
+                        figures_dir=None):
     """
     Create CIFTI files for group-averaged metrics.
-    
+
+    Each metric is written twice:
+    - `{output_dir}/group_{metric}.dscalar.nii` -- the timestamped run record.
+    - `{figures_dir}/group_{metric}_mean.dscalar.nii` -- the stable path that
+      downstream consumers resolve by name (summarize_r2_by_network.py,
+      plot_pycortex_surfaces.py). Both the `_mean` filename suffix and the
+      matching internal map name are required by those readers; change them
+      together or not at all.
+
     Parameters:
     -----------
     group_averages : dict
     output_dir : Path
     template_cifti_path : Path
     logger : logging.Logger
+    figures_dir : Path or None
+        Group CIFTI directory receiving the stable `_mean` copies. Skipped if None.
     """
     template = nib.load(str(template_cifti_path))
     brain_model_axis = template.header.get_axis(1)
+
     for metric_name, data in group_averages.items():
         mean_values = data['mean']
-        cifti_data = mean_values[np.newaxis, :]
-        map_name = f'{metric_name}'
-        scalar_axis = ScalarAxis([map_name])
-        new_header = Cifti2Header.from_axes((scalar_axis, brain_model_axis))
-        new_cifti = Cifti2Image(cifti_data, header=new_header)
-        output_path = output_dir / f'group_{metric_name}.dscalar.nii'
-        new_cifti.to_filename(str(output_path))
+        write_cifti_map(mean_values, metric_name,
+                        output_dir / f'group_{metric_name}.dscalar.nii',
+                        brain_model_axis, logger)
+        if figures_dir is not None:
+            write_cifti_map(mean_values, f'{metric_name}_mean',
+                            figures_dir / f'group_{metric_name}_mean.dscalar.nii',
+                            brain_model_axis, logger)
 
 
 def main():
@@ -399,7 +432,9 @@ def main():
     )
     first_subject = config['subjects'][0]['subject']
     template_cifti = get_template_cifti_path(first_subject, fmri_path, pipeline)
-    create_group_ciftis(group_averages, output_dir, template_cifti, logger)
+    figures_dir = PATHS['figures'] / 'ciftis' / config['output_label']
+    create_group_ciftis(group_averages, output_dir, template_cifti, logger,
+                        figures_dir=figures_dir)
     logger.info("")
     logger.info("="*80)
     logger.info("COMPLETE")
