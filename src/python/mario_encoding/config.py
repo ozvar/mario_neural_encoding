@@ -32,7 +32,19 @@ PATHS = {
     'src_python': PROJECT_DIR / 'src' / 'python',
     # Cifti directories
     'Yeo7_networks': '/home/ozvar/Atlases/HCP_S1200_Atlas/Yeo7_Yeo-Buckner-Choi-Raut.dlabel.nii',
-    'ColeAnticevic_networks': '/home/ozvar/Atlases/HCP_S1200_Atlas/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_netassignments_LR.dlabel.nii'
+    'ColeAnticevic_networks': '/home/ozvar/Atlases/HCP_S1200_Atlas/CortexSubcortex_ColeAnticevic_NetPartition_wSubcorGSR_netassignments_LR.dlabel.nii',
+    'Glasser360': '/home/ozvar/Atlases/HCP_S1200_Atlas/Q1-Q6_RelatedValidation210.CorticalAreas_dil_Final_Final_Areas_Group_Colors.32k_fs_LR.dlabel.nii',
+    # Network correspondence masks (binary dscalar, fsLR_32k, 91282 grayordinates)
+    # See docs/network_masks.md for sourcing, caveats, and centroid checks.
+    'network_masks_dir': '/home/ozvar/Atlases/NetworkMasks',
+    'mask_AMN':               '/home/ozvar/Atlases/NetworkMasks/AMN_CON_cole-anticevic.dscalar.nii',
+    'mask_AMN_Decision':      '/home/ozvar/Atlases/NetworkMasks/AMN-Decision_glasser-proxy.dscalar.nii',
+    'mask_AMN_Action':        '/home/ozvar/Atlases/NetworkMasks/AMN-Action_glasser-proxy.dscalar.nii',
+    'mask_AMN_Feedback':      '/home/ozvar/Atlases/NetworkMasks/AMN-Feedback_glasser-proxy.dscalar.nii',
+    'mask_AMN_ParsMarginalis': '/home/ozvar/Atlases/NetworkMasks/AMN-ParsMarginalis_glasser-proxy.dscalar.nii',
+    'mask_SCAN_M1_proxy':     '/home/ozvar/Atlases/NetworkMasks/SCAN-M1-proxy_glasser.dscalar.nii',
+    'mask_DAN':               '/home/ozvar/Atlases/NetworkMasks/DAN_cole-anticevic.dscalar.nii',
+    'mask_MDN_proxy':         '/home/ozvar/Atlases/NetworkMasks/MDN-proxy_FPN_cole-anticevic.dscalar.nii',
 }
 
 PARAMETERS = {

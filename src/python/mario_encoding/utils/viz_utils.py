@@ -1,5 +1,6 @@
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 from pathlib import Path
@@ -27,7 +28,7 @@ def sns_styleset():
     mpl.rcParams['xtick.major.size']  = 12
     mpl.rcParams['ytick.major.size']  = 12
     mpl.rcParams['font.family']       = 'sans-serif'
-    mpl.rcParams['font.sans-serif']   = ['Liberation Sans']
+    mpl.rcParams['font.sans-serif']   = ['Myriad Pro Cond']
     mpl.rcParams['font.weight']       = 'regular'
     mpl.rcParams['axes.titlesize']    = 30
     mpl.rcParams['axes.labelsize']    = 30
@@ -60,25 +61,32 @@ def pandas_styleset():
 
 
 def save_figure(
-    fig: Figure, 
-    fig_dir: Union[Path, str], 
-    file_name: str, 
-    dpi: int = 300
+    fig: Figure,
+    fig_dir: Union[Path, str],
+    file_name: str,
+    dpi: int = 300,
+    pad_inches: float = 0.1,
 ) -> None:
-    """
-    Save figure to file
-    Args:
-        fig: Matplotlib figure to save
-        fig_dir: Directory path to save the figure
-        file_name: Name of the file to save
-        dpi: Resolution in dots per inch
-    """
-    fig_dir = Path(fig_dir)  # Convert to Path if string
+    fig_dir = Path(fig_dir)
     fig_dir.mkdir(parents=True, exist_ok=True)
-    filepath = fig_dir / file_name
-    fig.savefig(filepath, dpi=dpi, bbox_inches='tight')
+    fig.savefig(fig_dir / file_name, dpi=dpi, bbox_inches="tight", pad_inches=pad_inches)
     plt.close(fig)
 
+
+
+def add_clean_end_ticks(ax=None, y_margin: float = 0.05) -> None:
+    if ax is None:
+        ax = plt.gca()
+    ymin, ymax = ax.get_ylim()
+
+    def round_up_to_nice(x, margin=0.1):
+        x_with_margin = x * (1 + margin)
+        magnitude = 10 ** np.floor(np.log10(x_with_margin))
+        normalized = np.ceil(x_with_margin / magnitude)
+        return normalized * magnitude
+
+    ax.set_ylim(ymin, round_up_to_nice(ymax, y_margin))
+    ax.yaxis.set_major_locator(plt.AutoLocator())
 
 
 def plot_distribution(

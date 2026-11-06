@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pathlib import Path
 from typing import Dict, Tuple
-from mario_encoding.utils import sns_styleset, save_figure
+from mario_encoding.utils import sns_styleset, save_figure, add_clean_end_ticks
 
 
 def load_config(experiment_dir: Path) -> Dict:
@@ -85,29 +85,6 @@ def compute_shared_variance(r2_data: Dict[str, np.ndarray], feature_spaces: list
     
     R2_shared = r2_data['R2_full'] - sum_unique
     return R2_shared
-
-
-def add_clean_end_ticks(ax=None, y_margin=0.05):
-   # Get current axes if none specified
-   if ax is None:
-       ax = plt.gca()
-   # Get current axis limits and data ranges
-   ymin, ymax = ax.get_ylim()
-   # Function to round up to next nice number
-   def round_up_to_nice(x, margin=0.1):
-       # Add margin to max value
-       x_with_margin = x * (1 + margin)
-       # Get magnitude
-       magnitude = 10 ** np.floor(np.log10(x_with_margin))
-       # Round up to next nice number at this magnitude
-       normalized = np.ceil(x_with_margin / magnitude)
-       return normalized * magnitude
-   # Calculate nice end value for y-axis only
-   y_end = round_up_to_nice(ymax, y_margin)
-   # Set new y limit only
-   ax.set_ylim(ymin, y_end)
-   # Generate evenly spaced ticks for y-axis only
-   ax.yaxis.set_major_locator(plt.AutoLocator())
 
 
 def plot_full_r2_histogram(r2_full: np.ndarray, output_path: Path, color: str) -> None:
@@ -370,7 +347,7 @@ def plot_variance_pie_chart(r2_data: Dict[str, np.ndarray], R2_shared: np.ndarra
     colors : dict
         Maps component names to hex color codes
     """
-    # Calculate mean R² for each component (filter NaN)
+    # Calculate mean R2 for each component (filter NaN)
     mean_shared = np.nanmean(R2_shared)
     mean_motor = np.nanmean(r2_data.get('R2_unique_motor', np.array([0.0])))
     mean_scene = np.nanmean(r2_data.get('R2_unique_scene', np.array([0.0])))

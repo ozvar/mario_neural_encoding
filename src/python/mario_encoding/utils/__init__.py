@@ -6,7 +6,8 @@ from .experiment_utils import (
 from .viz_utils import (
         sns_styleset,
         pandas_styleset,
-        save_figure
+        save_figure,
+        add_clean_end_ticks
 )
 from .logging_utils import setup_logger
 from .data_loading import (
