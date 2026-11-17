@@ -193,3 +193,19 @@ GROUP_N5_PRIMARY = {
     ]
   },
 }
+
+
+# Preliminary subsample for the CCGP geometry analysis: same subjects and full VP fit
+# identity as GROUP_N5_PRIMARY (so weights/peak-lag paths and the significance mask still
+# resolve to the full N=5 fit), but decoding is restricted to each subject's first 4
+# training sessions for a fast turnaround. `decode_sessions` is what fit_ccgp_geometry.py
+# loads/decodes; `significance_label` says which group's FDR mask to reuse.
+GROUP_N5_PRELIM = {
+  "output_label": "group_n5_prelim",
+  "significance_label": GROUP_N5_PRIMARY["output_label"],
+  "subjects": [
+    {**subject, "decode_sessions": subject["train_sessions"][:4]}
+    for subject in GROUP_N5_PRIMARY["subjects"]
+  ],
+  "feature_spaces": GROUP_N5_PRIMARY["feature_spaces"],
+}

@@ -352,6 +352,48 @@ def concatenate_sessions_with_names(subject: int, sessions: list, practice_metad
     return X, Y, run_onsets, session_onsets, level_onsets, feature_names
 
 
+def concatenate_level_labels(subject, sessions, practice_metadata_path, level_labels_path, logger=None):
+    """Concatenate per-TR level and background labels across sessions.
+
+    Mirrors concatenate_sessions_with_names exactly (sessions in list order, runs in
+    metadata['practice_runs'] order, per-run length = downsampled n_TRs), so the returned
+    arrays align 1:1 with that function's concatenated X/Y. Produced by attach_level_labels.py.
+
+    Returns
+    -------
+    level_ids : (n_samples_total,) object
+        Per-TR level string ('wXlY'), '' for ITI/rest TRs.
+    background : (n_samples_total,) object
+        Per-TR 'blue'/'black' background class, '' for ITI/rest TRs.
+    run_bounds : list of (start, end)
+        Run intervals in the concatenated TR index (end exclusive).
+    session_ids : (n_samples_total,) int
+        Index into `sessions` for each TR (CV grouping for leave-one-session-out).
+    """
+    level_list, bg_list, session_ids_list, run_bounds = [], [], [], []
+    cumulative = 0
+    for s_idx, session in enumerate(sessions):
+        metadata = load_practice_metadata(subject, session, practice_metadata_path)
+        for run in metadata['practice_runs']:
+            label_file = (Path(level_labels_path) / f'sub-{subject:02d}' / f'ses-{session:03d}' /
+                          f'sub-{subject:02d}_ses-{session:03d}_run-{run:02d}_level_labels.tsv')
+            df = pd.read_csv(label_file, sep='\t', keep_default_na=False,
+                             dtype={'level': str, 'background': str})
+            n = len(df)
+            run_bounds.append((cumulative, cumulative + n))
+            cumulative += n
+            level_list.append(df['level'].to_numpy())
+            bg_list.append(df['background'].to_numpy())
+            session_ids_list.append(np.full(n, s_idx, dtype=int))
+    level_ids = np.concatenate(level_list)
+    background = np.concatenate(bg_list)
+    session_ids = np.concatenate(session_ids_list)
+    if logger:
+        logger.info(f'Concatenated level labels: {len(level_ids)} TRs, {len(run_bounds)} runs, '
+                    f'{len(sessions)} sessions')
+    return level_ids, background, run_bounds, session_ids
+
+
 def preprocess_data(X, Y, run_onsets, level_onsets, logger):
     """
     Preprocess features and fMRI responses.
