@@ -280,9 +280,6 @@ def load_display_data(subject: int, sub_cfg: dict, min_window: int,
         n for n, k in zip(feature_names_sel, artifacts['valid_features_mask']) if k
     ]
 
-    X, Y = preprocess_data(X, Y, run_onsets, level_onsets, logger)
-    X = X - artifacts['train_x_mean'][None, :]
-
     mask_cfg = artifacts['mask']
     screen_mask = compute_screen_gameplay_mask(
         screen_meta['screen_gameplay'], rule=mask_cfg['rule'],
@@ -295,6 +292,9 @@ def load_display_data(subject: int, sub_cfg: dict, min_window: int,
         raise ValueError(
             f"Saved test mask has {active_mask.shape[0]} TRs, loaded X has "
             f"{X.shape[0]}; inputs changed since the fit.")
+
+    X, Y = preprocess_data(X, Y, run_onsets, active_mask, logger)
+    X = X - artifacts['train_x_mean'][None, :]
 
     delays = PARAMETERS['variance_partitioning']['delays']
     X_delayed = apply_delays_per_run(X, run_onsets, delays)

@@ -1,15 +1,14 @@
 """
-Changes from original:
-1. load_practice_features_with_names() returns features in FILE order
-2. concatenate_sessions_with_names() preserves FILE order
-3. FEATURE_SPACES is only used for grouping, not ordering
+Data loading and preprocessing for the Mario encoding models.
+
+Y is z-scored within runs using active-TR statistics before the full-length
+series is returned.
 """
 import json
 import numpy as np
 import nibabel as nib
 import pandas as pd
 from pathlib import Path
-from voxelwise_tutorials.utils import zscore_runs
 from voxelwise_tutorials.delayer import Delayer
 
 from mario_encoding.utils.screen_annotations import ALL_METADATA_COLUMNS
@@ -465,36 +464,82 @@ def concatenate_level_labels(subject, sessions, practice_metadata_path, level_la
     return level_ids, background, run_bounds, session_ids
 
 
-def preprocess_data(X, Y, run_onsets, level_onsets, logger):
+def zscore_runs_active(Y, run_onsets, active_mask, logger=None):
+    """Z-score each run using mean and SD over its active TRs only.
+
+    Statistics are estimated on active TRs and applied to every TR in the run.
+    Raises if a run has no active TRs or zero active-TR variance.
     """
-    Preprocess features and fMRI responses.
-    
-    Parameters:
-    -----------
-    X : array of shape (n_samples, n_features)
-    Y : array of shape (n_samples, n_grayordinates)
-    run_onsets : array of int
-    level_onsets : array of int (unused, kept for compatibility)
-    logger : logging.Logger
-        
-    Returns:
-    --------
-    X_preprocessed : array of shape (n_samples, n_features)
-    Y_preprocessed : array of shape (n_samples, n_grayordinates_valid)
+    Y = np.asarray(Y)
+    active_mask = np.asarray(active_mask, dtype=bool)
+    run_starts = np.asarray(run_onsets, dtype=np.int64)
+    if active_mask.shape != (Y.shape[0],):
+        raise ValueError(
+            f"active_mask has length {len(active_mask)}, expected {Y.shape[0]}")
+    if run_starts.ndim != 1 or run_starts.size == 0 or run_starts[0] != 0:
+        raise ValueError(f"run_onsets must be 1-D and start at 0, got {run_onsets}")
+    if np.any(np.diff(run_starts) <= 0):
+        raise ValueError("run_onsets must be strictly increasing")
+
+    run_stops = np.r_[run_starts[1:], Y.shape[0]]
+    Y_out = np.empty_like(Y)
+    for run_index, (start, stop) in enumerate(zip(run_starts, run_stops)):
+        run_active = active_mask[start:stop]
+        if not run_active.any():
+            raise ValueError(f"Run {run_index + 1} has no active TRs")
+        active_values = Y[start:stop][run_active]
+        if not np.isfinite(active_values).all():
+            raise ValueError(f"Run {run_index + 1} has non-finite active Y values")
+        mean = active_values.mean(axis=0, dtype=np.float64)
+        sd = active_values.std(axis=0, dtype=np.float64)
+        if np.any(sd <= 0):
+            raise ValueError(f"Run {run_index + 1} has zero active-TR variance")
+        Y_out[start:stop] = ((Y[start:stop] - mean) / sd).astype(Y.dtype)
+
+    if logger is not None:
+        logger.info(
+            f"  Y z-scored per run on active TRs: {int(active_mask.sum())}/"
+            f"{len(active_mask)} TRs, {len(run_starts)} runs")
+    return Y_out
+
+
+def preprocess_data(X, Y, run_onsets, active_mask, logger):
+    """Preprocess features and fMRI responses.
+
+    Y is z-scored per run on active TRs and applied to the full run. X is left
+    unscaled; NaNs in both are replaced by zero.
     """
     logger.info("Preprocessing data...")
-    
-    logger.info("  Z-scoring fMRI within runs")
-    Y = zscore_runs(Y, run_onsets)
+    Y = zscore_runs_active(Y, run_onsets, active_mask, logger)
 
     # In-place NaN replacement avoids a Y-sized transient copy at peak memory.
     np.nan_to_num(X, copy=False)
     np.nan_to_num(Y, copy=False)
-    
+
     logger.info(f"  Final X shape: {X.shape}, dtype: {X.dtype}")
     logger.info(f"  Final Y shape: {Y.shape}, dtype: {Y.dtype}")
-    
+
     return X, Y
+
+
+def verify_run_normalisation(Y, run_onsets, logger, label='Y', tolerance=1e-5):
+    """Check that each run of Y is zero-mean and unit-SD per voxel."""
+    run_starts = np.asarray(run_onsets, dtype=np.int64)
+    run_stops = np.r_[run_starts[1:], Y.shape[0]]
+    max_mean = 0.0
+    max_sd = 0.0
+    for start, stop in zip(run_starts, run_stops):
+        run = Y[start:stop]
+        max_mean = max(max_mean, float(np.max(np.abs(run.mean(axis=0)))))
+        max_sd = max(max_sd, float(np.max(np.abs(run.std(axis=0) - 1.0))))
+
+    if max_mean > tolerance or max_sd > tolerance:
+        raise ValueError(
+            f"{label} retained samples are not zero-mean/unit-SD per run: "
+            f"max |mean|={max_mean:.3g}, max |SD-1|={max_sd:.3g}")
+    logger.info(
+        f"  {label} retained normalisation check: max |mean|={max_mean:.2e}, "
+        f"max |SD-1|={max_sd:.2e}")
 
 
 def compute_baseline_mask(X, run_onsets, logger=None, threshold=0.01):

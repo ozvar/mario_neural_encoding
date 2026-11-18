@@ -729,11 +729,20 @@ def main():
     logger.info("PREPROCESSING")
     logger.info("="*80)
 
+    # This deferred diagnostic filters baseline TRs before preprocessing, so all
+    # remaining samples are active; active-TR normalisation is equivalent here.
+    active_mask_train = np.ones(Y_train.shape[0], dtype=bool)
+    active_mask_test = np.ones(Y_test.shape[0], dtype=bool)
+
     logger.info("Preprocessing training data...")
-    X_train, Y_train = preprocess_data(X_train, Y_train, run_onsets_train, level_onsets_train, logger)
+    X_train, Y_train = preprocess_data(
+        X_train, Y_train, run_onsets_train, active_mask_train, logger
+    )
 
     logger.info("Preprocessing test data...")
-    X_test, Y_test = preprocess_data(X_test, Y_test, run_onsets_test, level_onsets_test, logger)
+    X_test, Y_test = preprocess_data(
+        X_test, Y_test, run_onsets_test, active_mask_test, logger
+    )
 
     # ========================================================================
     # PHASE RANDOMIZATION (if requested)

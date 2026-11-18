@@ -40,6 +40,7 @@ from mario_encoding.utils.data_loading import (
     filter_zero_variance_features,
     filter_zero_variance_voxels,
     preprocess_data,
+    verify_run_normalisation,
     apply_delays_per_run,
     drop_baseline_samples,
 )
@@ -204,7 +205,7 @@ def prepare_test_data(subject: int, test_sessions: list, train_x_mean: np.ndarra
             f"Saved test mask has {active_mask.shape[0]} TRs, loaded X has "
             f"{X_test.shape[0]}; inputs changed since the fit.")
 
-    X_test, Y_test = preprocess_data(X_test, Y_test, run_onsets, level_onsets, logger)
+    X_test, Y_test = preprocess_data(X_test, Y_test, run_onsets, active_mask, logger)
 
     # Center X with the fit-time training mean, not a fresh statistic.
     if X_test.shape[1] != train_x_mean.shape[0]:
@@ -220,6 +221,7 @@ def prepare_test_data(subject: int, test_sessions: list, train_x_mean: np.ndarra
     X_test_delayed, Y_test, run_onsets, session_onsets = drop_baseline_samples(
         X_test_delayed, Y_test, run_onsets, session_onsets, active_mask, logger,
     )
+    verify_run_normalisation(Y_test, run_onsets, logger, label='Test Y')
 
     logger.info(f"Test data after pipeline: X={X_test_delayed.shape}, Y={Y_test.shape}, "
                 f"n_runs={len(run_onsets)}")

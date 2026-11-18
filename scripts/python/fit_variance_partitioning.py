@@ -26,6 +26,7 @@ from mario_encoding.utils.data_loading import (
     filter_zero_variance_features,
     filter_zero_variance_voxels,
     preprocess_data,
+    verify_run_normalisation,
     compute_baseline_mask,
     apply_delays_per_run,
     drop_baseline_samples,
@@ -664,18 +665,22 @@ def main():
     validate_all_spaces_nonempty(feature_spaces_filtered, logger)
 
     # ========================================================================
-    # PREPROCESS DATA (z-score Y within runs on full data, NaN to 0)
+    # PREPROCESS DATA (Y z-scored on active TRs, applied full-length, NaN to 0)
     # ========================================================================
     logger.info("")
     logger.info("="*80)
     logger.info("PREPROCESSING")
     logger.info("="*80)
 
-    logger.info("Preprocessing training data (Y z-scored within runs, including non-gameplay TRs)...")
-    X_train, Y_train = preprocess_data(X_train, Y_train, run_onsets_train, level_onsets_train, logger)
+    logger.info("Preprocessing training data (Y z-scored on active TRs)...")
+    X_train, Y_train = preprocess_data(
+        X_train, Y_train, run_onsets_train, active_mask_train, logger
+    )
 
     logger.info("Preprocessing test data...")
-    X_test, Y_test = preprocess_data(X_test, Y_test, run_onsets_test, level_onsets_test, logger)
+    X_test, Y_test = preprocess_data(
+        X_test, Y_test, run_onsets_test, active_mask_test, logger
+    )
 
     # ========================================================================
     # MEAN-CENTER X (training active mean) AND APPLY DELAYS PER RUN
@@ -726,6 +731,8 @@ def main():
     X_test_delayed, Y_test, run_onsets_test, session_onsets_test = drop_baseline_samples(
         X_test_delayed, Y_test, run_onsets_test, session_onsets_test, active_mask_test, logger
     )
+    verify_run_normalisation(Y_train, run_onsets_train, logger, label='Train Y')
+    verify_run_normalisation(Y_test, run_onsets_test, logger, label='Test Y')
     del active_mask_train, active_mask_test
     gc.collect()
     logger.info("  Freed pre-drop X/Y and masks [OK]")

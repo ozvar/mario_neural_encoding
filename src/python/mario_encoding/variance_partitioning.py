@@ -395,103 +395,69 @@ def compute_integration_index(R2_full, R2_unique_dict, logger):
 
 
 def compute_product_measure(model_full, X_test_list, Y_test, space_names_ordered, logger):
-    """
-    Compute product measure for each feature space from joint model.
-    
-    Product measure decomposes R^2 into contributions from each feature space:
-    R_tilde_j = sum(y_pred_j * (2*y - y_pred_full)) / sum(y^2)
-    
-    where y_pred_j is the sub-prediction from feature space j using the joint model weights.
-    
-    Parameters:
-    -----------
-    model_full : fitted GroupRidgeCV
-        Full model with all feature spaces
-    X_test_list : list of arrays
-        Test features, one array per feature space
-    Y_test : array of shape (n_samples, n_voxels)
-        Test targets
-    space_names_ordered : list of str
-        Feature space names in order matching X_test_list
-    logger : logging.Logger
-        
-    Returns:
-    --------
-    product_measures : dict
-        Keys are space names, values are product measure arrays (n_voxels,)
+    """Compute per-space product measures from a fitted joint model.
+
+    Y_test must be zero-mean and is expected to be unit-SD per run. The
+    decomposition sum_j R_tilde_j = R2_full holds only under that condition.
     """
     logger.info("Computing product measure for each feature space...")
-    
-    # Get full model prediction
+
+    mean_offset = Y_test.mean(axis=0)
+    max_offset = np.max(np.abs(mean_offset))
+    if max_offset > 1e-6:
+        raise ValueError(
+            f"Y_test is not zero-mean (max |mean|={max_offset:.3g}); "
+            "active-TR normalisation did not run as expected.")
+
     Y_pred_full = model_full.predict(X_test_list)
     if hasattr(Y_pred_full, 'cpu'):
         Y_pred_full = Y_pred_full.cpu().numpy()
-    
-    # Get weights from model - shape depends on delays
-    # model_full.coef_ has shape (n_targets, n_features_total) or (n_targets, n_features_per_group, n_groups)
+
     weights = model_full.coef_
     if hasattr(weights, 'cpu'):
         weights = weights.cpu().numpy()
-    
-    # Compute sub-predictions for each feature space
+    if weights.ndim != 2:
+        raise ValueError(
+            f"Expected 2-D coef_ of shape (n_features, n_voxels), got {weights.shape}")
+
+    denominator = np.sum(Y_test ** 2, axis=0)
+    if np.any(denominator <= 0):
+        raise ValueError("Y_test has zero variance in at least one voxel")
+
     product_measures = {}
-    
-    # Determine if we need to handle grouped weights structure
-    if weights.ndim == 3:
-        # Shape: (n_voxels, n_features_per_delay, n_groups)
-        # Need to index by group
-        for idx, space_name in enumerate(space_names_ordered):
-            X_space = X_test_list[idx]
-            weights_space = weights[:, :, idx]  # (n_voxels, n_features_for_this_space)
-            
-            # Compute sub-prediction: X_space @ weights_space.T
-            Y_pred_space = X_space @ weights_space.T  # (n_samples, n_voxels)
+    feature_start = 0
+    for idx, space_name in enumerate(space_names_ordered):
+        X_space = X_test_list[idx]
+        n_features_space = X_space.shape[1]
+        weights_space = weights[feature_start:feature_start + n_features_space, :]
+        Y_pred_space = X_space @ weights_space
+        numerator = np.sum(Y_pred_space * (2 * Y_test - Y_pred_full), axis=0)
+        product_measures[space_name] = numerator / denominator
 
-            # Compute product measure per voxel
-            numerator = np.sum(Y_pred_space * (2 * Y_test - Y_pred_full), axis=0)  # (n_voxels,)
-            denominator = np.sum(Y_test ** 2, axis=0)  # (n_voxels,)
+        mean_pm = product_measures[space_name].mean()
+        n_negative = (product_measures[space_name] < 0).sum()
+        pct_negative = n_negative / len(product_measures[space_name]) * 100
+        logger.info(
+            f"  {space_name}: mean={mean_pm:.6f}, {n_negative} negative "
+            f"({pct_negative:.1f}%)")
 
-            product_measures[space_name] = numerator / np.maximum(denominator, 1.0)
-            
-            mean_pm = product_measures[space_name].mean()
-            n_negative = (product_measures[space_name] < 0).sum()
-            pct_negative = n_negative / len(product_measures[space_name]) * 100
-            
-            logger.info(f"  {space_name}: mean={mean_pm:.6f}, {n_negative} negative ({pct_negative:.1f}%)")
-    else:
-        # Fallback: weights shape (n_voxels, n_features_total)
-        # Need to manually slice by cumulative feature counts
-        feature_start = 0
-        for idx, space_name in enumerate(space_names_ordered):
-            X_space = X_test_list[idx]
-            n_features_space = X_space.shape[1]
-            weights_space = weights[feature_start:feature_start + n_features_space, :]
-            
-            Y_pred_space = X_space @ weights_space
+        feature_start += n_features_space
 
-            numerator = np.sum(Y_pred_space * (2 * Y_test - Y_pred_full), axis=0)
-            denominator = np.sum(Y_test ** 2, axis=0)
-            
-            product_measures[space_name] = numerator / np.maximum(denominator, 1.0)
-            
-            mean_pm = product_measures[space_name].mean()
-            n_negative = (product_measures[space_name] < 0).sum()
-            pct_negative = n_negative / len(product_measures[space_name]) * 100
-            
-            logger.info(f"  {space_name}: mean={mean_pm:.6f}, {n_negative} negative ({pct_negative:.1f}%)")
-            
-            feature_start += n_features_space
-    
+    if feature_start != weights.shape[0]:
+        raise ValueError(
+            f"Weight slicing consumed {feature_start} rows but coef_ has "
+            f"{weights.shape[0]} rows")
+
     # Verify decomposition: sum should equal R^2
     sum_product = np.sum([v for v in product_measures.values()], axis=0)
     R2_full = model_full.score(X_test_list, Y_test)
     if hasattr(R2_full, 'cpu'):
         R2_full = R2_full.cpu().numpy()
-    
+
     logger.info(f"  Sum of product measures: mean={sum_product.mean():.6f}")
     logger.info(f"  R2_full: mean={R2_full.mean():.6f}")
     logger.info(f"  Difference: mean={np.abs(sum_product - R2_full).mean():.8f}")
-    
+
     return product_measures
 
 
