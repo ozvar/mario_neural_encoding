@@ -6,7 +6,6 @@ similarity and active-TR coverage. No encoding model is fitted. Figures are
 produced by plot_pme_reliability.py.
 """
 import argparse
-import logging
 from pathlib import Path
 
 import nibabel as nib
@@ -15,6 +14,12 @@ import pandas as pd
 
 from mario_encoding.config import PARAMETERS, PATHS
 from mario_encoding.group_configs import GROUP_N3_PRIMARY, GROUP_N5_PRIMARY
+from mario_encoding.utils.audit import (
+    find_run_path,
+    frame_to_markdown,
+    safe_median,
+    setup_logging,
+)
 from mario_encoding.utils.data_loading import (
     load_practice_fmri,
     load_practice_metadata,
@@ -51,43 +56,6 @@ MIN_MEDIAN_SPLIT_HALF = 0.50
 MIN_SAME_LEVEL_R = 0.10
 
 
-def setup_logging(output_dir):
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[logging.FileHandler(output_dir / 'audit.log'),
-                  logging.StreamHandler()],
-        force=True,
-    )
-    return logging.getLogger(__name__)
-
-
-def safe_median(series):
-    """Median that returns NaN for an all-missing series without warnings."""
-    values = series.dropna()
-    return float(values.median()) if len(values) else np.nan
-
-
-def frame_to_markdown(df):
-    """Render a DataFrame as a simple Markdown table without tabulate."""
-    columns = [str(col) for col in df.columns]
-    lines = ['| ' + ' | '.join(columns) + ' |',
-             '|' + '|'.join(['---'] * len(columns)) + '|']
-    for _, row in df.iterrows():
-        values = []
-        for col in df.columns:
-            value = row[col]
-            if isinstance(value, float) and np.isfinite(value):
-                values.append(f'{value:.3f}')
-            elif isinstance(value, float):
-                values.append('')
-            else:
-                values.append(str(value).replace('|', '/'))
-        lines.append('| ' + ' | '.join(values) + ' |')
-    return '\n'.join(lines)
-
-
 def relative_path(filename):
     """Return the annotation-style path starting at the subject directory."""
     text = str(filename)
@@ -95,11 +63,6 @@ def relative_path(filename):
     if index < 0:
         raise ValueError(f'Cannot find sub- in filename: {filename}')
     return text[index:]
-
-
-def find_run_path(directory, subject, session, run, suffix):
-    return (Path(directory) / f'sub-{subject:02d}' / f'ses-{session:03d}' /
-            f'sub-{subject:02d}_ses-{session:03d}_run-{run:02d}_{suffix}.tsv')
 
 
 def find_annotation_path(root, subject, session, run):
@@ -218,7 +181,7 @@ def load_attempt_table(path, group, logger):
 
 
 def read_run_screen_tables(subject, session, run, combined_dir,
-                           annotation_root, logger):
+                           annotation_root):
     """Read the combined repvars and validated annotated-event tables."""
     combined_path = find_run_path(
         combined_dir, subject, session, run, 'desc-combined')
@@ -266,7 +229,7 @@ def load_screen_for_run(subject, session, run, n_trs, combined_dir,
                         annotation_root, logger):
     """Build the Screen/Gameplay mask for one run from validated annotations."""
     combined, annotations, label = read_run_screen_tables(
-        subject, session, run, combined_dir, annotation_root, logger)
+        subject, session, run, combined_dir, annotation_root)
     p, coverage, n_empty = build_tr_screen_fractions(
         combined, annotations, n_trs, label)
     active = compute_screen_gameplay_mask(
@@ -476,8 +439,6 @@ def similarity_stats(r_pairs, levels, runs, reps, upper, valid):
 
     same_level_same_run = same_level_pair & same_run_pair
     different_level_same_run = different_level_pair & same_run_pair
-    same_level_diff_run = same_level_pair & ~same_run_pair
-    different_level_diff_run = different_level_pair & ~same_run_pair
 
     same_z = fisher_mean_z(r_pairs[same_level_pair])
     different_z = fisher_mean_z(r_pairs[different_level_pair])
@@ -503,8 +464,6 @@ def similarity_stats(r_pairs, levels, runs, reps, upper, valid):
         'n_different_pairs': int(different_level_pair.sum()),
         'n_same_run_same_pairs': int(same_level_same_run.sum()),
         'n_same_run_different_pairs': int(different_level_same_run.sum()),
-        'n_same_level_diff_run_pairs': int(same_level_diff_run.sum()),
-        'n_different_level_diff_run_pairs': int(different_level_diff_run.sum()),
     }
 
 

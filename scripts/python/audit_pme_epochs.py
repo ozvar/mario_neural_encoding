@@ -5,7 +5,6 @@ duration and outcome tables plus a Markdown summary. No fMRI is loaded. Figures
 are produced by plot_pme_audit.py.
 """
 import argparse
-import logging
 from pathlib import Path
 
 import numpy as np
@@ -13,6 +12,12 @@ import pandas as pd
 
 from mario_encoding.config import FEATURE_SPACES, PARAMETERS, PATHS
 from mario_encoding.group_configs import GROUP_N3_PRIMARY, GROUP_N5_PRIMARY
+from mario_encoding.utils.audit import (
+    find_run_path,
+    frame_to_markdown,
+    safe_median,
+    setup_logging,
+)
 from mario_encoding.utils.data_loading import load_practice_metadata
 
 GROUP_REGISTRY = {
@@ -32,49 +37,6 @@ MIN_SUBJECTS_PASS = 4
 MIN_LEVELS_GE2 = 10
 MIN_LEVELS_GE3 = 5
 MIN_MEDIAN_TRS = 8
-
-
-def setup_logging(output_dir):
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[logging.FileHandler(output_dir / 'audit.log'),
-                  logging.StreamHandler()],
-        force=True,
-    )
-    return logging.getLogger(__name__)
-
-
-def safe_median(series):
-    """Median that returns NaN for an all-missing series without warnings."""
-    values = series.dropna()
-    return float(values.median()) if len(values) else np.nan
-
-
-def frame_to_markdown(df):
-    """Render a DataFrame as a simple Markdown table without tabulate."""
-    columns = [str(col) for col in df.columns]
-    lines = ['| ' + ' | '.join(columns) + ' |',
-             '|' + '|'.join(['---'] * len(columns)) + '|']
-    for _, row in df.iterrows():
-        values = []
-        for col in df.columns:
-            value = row[col]
-            if isinstance(value, float) and np.isfinite(value):
-                values.append(f'{value:.3f}')
-            elif isinstance(value, float):
-                values.append('')
-            else:
-                values.append(str(value).replace('|', '/'))
-        lines.append('| ' + ' | '.join(values) + ' |')
-    return '\n'.join(lines)
-
-
-def find_run_file(directory, subject, session, run, suffix):
-    path = (Path(directory) / f'sub-{subject:02d}' / f'ses-{session:03d}' /
-            f'sub-{subject:02d}_ses-{session:03d}_run-{run:02d}_{suffix}.tsv')
-    return path
 
 
 def load_downsampled(run_path, logger):
@@ -130,9 +92,9 @@ def get_life_loss_times(group):
 def load_run_inputs(subject, session, run, metadata, run_index,
                     combined_dir, downsampled_dir, logger):
     """Load and validate one run's frame and downsampled tables."""
-    combined_path = find_run_file(
+    combined_path = find_run_path(
         combined_dir, subject, session, run, 'desc-combined')
-    downsampled_path = find_run_file(
+    downsampled_path = find_run_path(
         downsampled_dir, subject, session, run, 'desc-downsampled')
     if not combined_path.exists():
         logger.warning('Missing combined file: %s', combined_path)

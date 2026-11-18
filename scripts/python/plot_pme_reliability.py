@@ -6,7 +6,6 @@ recomputed; the heatmap only displays the correlation matrix of the saved
 attempt patterns.
 """
 import argparse
-import logging
 import re
 from pathlib import Path
 
@@ -17,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from mario_encoding.config import PATHS
+from mario_encoding.utils.audit import level_sort_key, setup_logging
 
 OUTCOME_COLORS = {
     'completed': '#0072B2',
@@ -30,26 +30,6 @@ RANDOM_SEED = 42
 ATTEMPT_TABLE = 'attempt_reliability.csv'
 SUBJECT_TABLE = 'subject_reliability_summary.csv'
 PATTERN_DIR = 'patterns'
-
-
-def setup_logging(output_dir):
-    output_dir.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        handlers=[logging.FileHandler(output_dir / 'plot.log'),
-                  logging.StreamHandler()],
-        force=True,
-    )
-    return logging.getLogger(__name__)
-
-
-def level_sort_key(level):
-    """Sort levels such as w2l1 by world and level number."""
-    match = re.match(r'w(\d+)l(\d+)', str(level))
-    if match:
-        return int(match.group(1)), int(match.group(2)), str(level)
-    return 999, 999, str(level)
 
 
 def load_tables(table_dir):
@@ -249,7 +229,7 @@ def parse_args():
 
 def main():
     args = parse_args()
-    logger = setup_logging(args.table_dir)
+    logger = setup_logging(args.table_dir, log_name='plot.log')
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     attempt_df, subject_df = load_tables(args.table_dir)
