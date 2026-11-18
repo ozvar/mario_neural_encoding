@@ -4,8 +4,10 @@ Per-participant descriptive statistics for the downsampled behavioral features.
 Feature values are proportion-active within each TR, so they are bounded in
 [0, 1] but concentrated on the endpoints. Density estimates such as violins
 misrepresent that structure, so the distribution is summarized as an explicit
-endpoint composition: the mean over active TRs, plus the fractions of TRs at
-exactly 0, strictly inside (0, 1), and at exactly 1.
+endpoint composition: the mean over feature-active TRs, plus the fractions of
+TRs at exactly 0, strictly inside (0, 1), and at exactly 1. This is the
+descriptive feature-activity sample, not the Screen/Gameplay mask used by the
+fit.
 
 The CSV also carries `bernoulli_ratio` = sd / sqrt(p(1-p)), which indexes
 sub-TR flickering: near 1 means the feature is effectively switch-like after TR
@@ -50,13 +52,13 @@ def load_subject_active_features(
     practice_metadata_path: Path,
     downsampled_path: Path,
 ) -> tuple[np.ndarray, list[str]]:
-    """Pool active-TR features across one subject's training and test sessions."""
+    """Pool feature-active-TR features across one subject's training and test sessions."""
     X_list = []
     feature_names = None
 
     for session in sessions:
         metadata = load_practice_metadata(subject, session, practice_metadata_path)
-        X_sess, feat_names = load_practice_features_with_names(
+        X_sess, feat_names, _ = load_practice_features_with_names(
             subject, session, metadata['practice_runs'], downsampled_path
         )
         if feature_names is None:
@@ -99,7 +101,7 @@ def summarize_features(
     space_labels: list[str],
     subject: int,
 ) -> pd.DataFrame:
-    """Per-feature endpoint composition and dispersion over active TRs."""
+    """Per-feature endpoint composition and dispersion over feature-active TRs."""
     mean = X.mean(axis=0)
     sd = X.std(axis=0)
     p_zero = (X == 0).mean(axis=0)
@@ -160,7 +162,7 @@ def plot_feature_summary(
         palette[0] if s == 'motor' else palette[2] for s in ordered['space']
     ], height=0.75)
     ax.set_xlim(0, 1)
-    ax.set_xlabel('Mean activity over active TRs', fontsize=FONT_SIZE)
+    ax.set_xlabel('Mean activity over feature-active TRs', fontsize=FONT_SIZE)
     ax.set_yticks(y)
     ax.set_yticklabels(ordered['feature'], fontsize=TICK_SIZE)
     ax.tick_params(axis='x', labelsize=TICK_SIZE)
@@ -176,7 +178,7 @@ def plot_feature_summary(
         ax.barh(y, ordered[column], left=left, color=colour, label=label, height=0.75)
         left = left + ordered[column].to_numpy()
     ax.set_xlim(0, 1)
-    ax.set_xlabel('Fraction of active TRs', fontsize=FONT_SIZE)
+    ax.set_xlabel('Fraction of feature-active TRs', fontsize=FONT_SIZE)
     ax.tick_params(axis='x', labelsize=TICK_SIZE)
     ax.legend(fontsize=TICK_SIZE, loc='lower center', bbox_to_anchor=(0.5, 1.0),
               ncol=3, frameon=False)
@@ -185,7 +187,7 @@ def plot_feature_summary(
     for ax in axes:
         ax.axhline(n_motor - 0.5, color='0.15', linewidth=1.0, linestyle='--')
 
-    fig.suptitle(f'sub-{subject:02d}  feature distributions over active TRs',
+    fig.suptitle(f'sub-{subject:02d}  feature distributions over feature-active TRs',
                  fontsize=FONT_SIZE)
 
     stem = f'sub-{subject:02d}_feature_distributions'

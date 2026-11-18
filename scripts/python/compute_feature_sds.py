@@ -4,7 +4,8 @@ Compute per-feature training standard deviations for the tuning-profile analysis
 The tuning analysis (docs/tuning_profiles_design.md) rescales each encoding
 weight by the standard deviation of its feature, turning raw weights into
 standardized coefficients that are comparable across features on different
-natural scales. That SD is the std of each feature over the active training TRs.
+natural scales. That SD is the std of each feature over the retained training
+TRs (the fit's Screen/Gameplay mask).
 It is invariant to the fit-time mean-centering and to FIR delaying, so it is
 recomputed here directly from the feature time series without needing the model
 or the fMRI responses.
@@ -18,6 +19,7 @@ omitted (matching *_weights_avg). Each space's surviving feature names are saved
 alongside so downstream code can align by name.
 """
 import argparse
+import json
 import logging
 
 import numpy as np
@@ -26,7 +28,10 @@ from mario_encoding.config import PATHS, PARAMETERS, FEATURE_SPACES
 from mario_encoding.utils.data_loading import (
     load_session_data_with_names,
     select_and_validate_features,
-    compute_baseline_mask,
+)
+from mario_encoding.utils.screen_annotations import (
+    SCREEN_METADATA_COLUMNS,
+    compute_screen_gameplay_mask,
 )
 
 
@@ -63,13 +68,17 @@ def load_training_features(subject: int, sessions: list, fmri_path, pipeline: st
     run_onsets_list = [0]
     cumulative_samples = 0
     feature_names = None
+    metadata_chunks = {col: [] for col in SCREEN_METADATA_COLUMNS}
 
     for session in sessions:
-        X_sess, Y_sess, metadata, feat_names = load_session_data_with_names(
+        X_sess, Y_sess, metadata, feat_names, extra = load_session_data_with_names(
             subject, session, PATHS['practice_phase_metadata'],
-            PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger
+            PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger,
+            metadata_columns=SCREEN_METADATA_COLUMNS,
         )
         del Y_sess  # fMRI responses are not needed for feature SDs
+        for col in SCREEN_METADATA_COLUMNS:
+            metadata_chunks[col].append(extra[col])
 
         if feature_names is None:
             feature_names = feat_names
@@ -88,8 +97,11 @@ def load_training_features(subject: int, sessions: list, fmri_path, pipeline: st
 
     X = np.vstack(X_list)
     run_onsets = np.array(run_onsets_list)
+    screen_metadata = {
+        col: np.concatenate(metadata_chunks[col]) for col in SCREEN_METADATA_COLUMNS
+    }
     logger.info(f"Concatenated {len(sessions)} sessions: {X.shape[0]} TRs, {len(run_onsets)} runs")
-    return X, run_onsets, feature_names
+    return X, run_onsets, feature_names, screen_metadata
 
 
 def main() -> None:
@@ -132,12 +144,45 @@ def main() -> None:
             f"matches a completed fit for this subject (group_configs.py)."
         )
 
-    # Load features (fMRI discarded), select configured features, mark active TRs.
-    X, run_onsets, feature_names = load_training_features(
+    metadata_file = output_dir / 'metadata.json'
+    mask_file = output_dir / 'mask_screen_gameplay.npz'
+    for path in (metadata_file, mask_file):
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{path.name} not found in {output_dir}. The fit predates the "
+                "Screen/Gameplay mask or is incomplete; refit first."
+            )
+    with open(metadata_file) as handle:
+        fit_metadata = json.load(handle)
+    mask_cfg = fit_metadata.get('mask')
+    if not mask_cfg:
+        raise ValueError(
+            f"metadata.json in {output_dir} has no mask block; refit first.")
+    saved_mask = np.load(mask_file)['train_mask']
+
+    # Load features (fMRI discarded), select configured features, apply the fit mask.
+    X, run_onsets, feature_names, screen_metadata = load_training_features(
         args.subject, train_sessions, fmri_path, pipeline, logger
     )
     X, feature_names, _ = select_and_validate_features(X, feature_names, FEATURE_SPACES, logger)
-    active_mask = compute_baseline_mask(X, run_onsets, logger=logger)
+    active_mask = compute_screen_gameplay_mask(
+        screen_metadata['screen_gameplay'],
+        rule=mask_cfg['rule'],
+        threshold=mask_cfg['threshold'],
+        logger=logger,
+    )
+    if active_mask.shape[0] != saved_mask.shape[0]:
+        raise ValueError(
+            f"Recomputed mask has {active_mask.shape[0]} TRs, saved fit mask has "
+            f"{saved_mask.shape[0]}; training sessions or inputs changed.")
+    if not np.array_equal(active_mask, saved_mask):
+        raise ValueError(
+            "Recomputed Screen/Gameplay mask does not match the fit's saved mask; "
+            "inputs or mask configuration changed since the fit.")
+    if active_mask.shape[0] != X.shape[0]:
+        raise ValueError(
+            f"Recomputed mask has {active_mask.shape[0]} TRs, loaded X has "
+            f"{X.shape[0]}; inputs changed since the fit.")
 
     # Use the fit's own zero-variance mask so surviving features (and their order)
     # match *_weights_avg exactly. The mask is over the selected (config-subset) features.

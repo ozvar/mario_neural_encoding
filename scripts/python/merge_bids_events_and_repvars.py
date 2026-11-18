@@ -4,10 +4,24 @@ Merge BIDS event annotations with replay variables to create run-level combined 
 This script takes session-level replay variable TSVs and run-level BIDS event annotations,
 merging them into comprehensive run-level dataframes with event markers and scene labels.
 """
+import argparse
+
 import pandas as pd
 import numpy as np
 from pathlib import Path
-from mario_encoding.config import PATHS
+from mario_encoding.config import PATHS, PARAMETERS
+from mario_encoding.group_configs import GROUP_N3_PRIMARY, GROUP_N5_PRIMARY
+from mario_encoding.utils.screen_annotations import (
+    ScreenAnnotationError,
+    carry_provenance,
+    create_screen_columns,
+    load_or_collect_annotation_provenance,
+)
+
+GROUP_REGISTRY = {
+    'GROUP_N3_PRIMARY': GROUP_N3_PRIMARY,
+    'GROUP_N5_PRIMARY': GROUP_N5_PRIMARY,
+}
 
 
 
@@ -35,6 +49,29 @@ def find_annotated_events(subject=None, session=None, run=None, events_path=PATH
     run_pattern = f'run-{run:02d}' if run else 'run-*'
     pattern = f'{sub_pattern}/{ses_pattern}/func/*{run_pattern}_desc-annotated_events.tsv'
     return list(events_path.glob(pattern))
+
+
+def get_screen_annotations_path(subject, session, run,
+                                screen_annotations_root=PATHS['screen_gameplay_annotations']):
+    """Get the validated Screen/Gameplay annotation path for one run."""
+    base = Path(screen_annotations_root) / f'sub-{subject:02d}' / f'ses-{session:03d}' / 'func'
+    return base / f'sub-{subject:02d}_ses-{session:03d}_task-mario_run-{run:02d}_desc-annotated_events.tsv'
+
+
+def find_screen_annotations(subject=None, session=None, run=None,
+                            screen_annotations_root=PATHS['screen_gameplay_annotations']):
+    """Find validated Screen/Gameplay annotation files matching criteria."""
+    sub_pattern = f'sub-{subject:02d}' if subject else 'sub-*'
+    ses_pattern = f'ses-{session:03d}' if session else 'ses-*'
+    run_pattern = f'run-{run:02d}' if run else 'run-*'
+    pattern = f'{sub_pattern}/{ses_pattern}/func/*{run_pattern}_desc-annotated_events.tsv'
+    return list(Path(screen_annotations_root).glob(pattern))
+
+
+def load_screen_annotations_tsv(filepath):
+    """Load a validated Screen/Gameplay annotation TSV."""
+    return pd.read_csv(filepath, sep='\t',
+                       dtype={'trial_type': str, 'stim_file': str})
 
 
 def load_annotated_events_tsv(filepath):
@@ -187,8 +224,9 @@ def save_run_combined_tsv(df, subject, session, run, per_run_combined_path=PATHS
 
 def merge_variables_and_annotations_for_run(subject, session, run, annotations_filepath=None,
                                             per_session_combined_repvars_path=PATHS['per_session_combined_repvars_tsvs'],
-                                            events_path=PATHS['bids_annotated_tsvs']):
-    """Merge variables and annotations for a single run."""
+                                            events_path=PATHS['bids_annotated_tsvs'],
+                                            screen_annotations_root=PATHS['screen_gameplay_annotations']):
+    """Merge legacy annotations and the validated Screen/Gameplay source for one run."""
     session_vars_path = get_session_combined_repvars_path(subject, session, per_session_combined_repvars_path)
     variables_df = pd.read_csv(session_vars_path, sep='\t')
     if annotations_filepath is not None:
@@ -202,8 +240,17 @@ def merge_variables_and_annotations_for_run(subject, session, run, annotations_f
     merged_df = add_frame_times(merged_df)
     merged_df = create_event_columns(merged_df, annotations_df, event_types)
     merged_df = create_scene_column(merged_df, annotations_df)
+
+    screen_path = get_screen_annotations_path(
+        subject, session, run, screen_annotations_root)
+    if not screen_path.exists():
+        raise ScreenAnnotationError(
+            f"Validated Screen/Gameplay annotations not found: {screen_path}")
+    screen_df = load_screen_annotations_tsv(screen_path)
+    merged_df, coverage = create_screen_columns(
+        merged_df, screen_df, frame_rate=PARAMETERS['frame_rate'])
     merged_df = merged_df.drop(columns=['relative_path'])
-    return merged_df
+    return merged_df, coverage
 
 
 def extract_run_from_events_filename(filepath):
@@ -237,12 +284,14 @@ def find_all_replay_sessions(replay_variables_path=PATHS['replay_variables_jsons
 def process_all_runs_for_session(subject, session,
                                  per_session_combined_repvars_path=PATHS['per_session_combined_repvars_tsvs'],
                                  events_path=PATHS['bids_annotated_tsvs'],
-                                 per_run_combined_path=PATHS['per_run_combined_repvars_and_bids_events']):
+                                 per_run_combined_path=PATHS['per_run_combined_repvars_and_bids_events'],
+                                 screen_annotations_root=PATHS['screen_gameplay_annotations']):
     """Process all runs for a session, merging variables and annotations."""
     annotation_files = find_annotated_events(subject=subject, session=session, events_path=events_path)
     if not annotation_files:
         raise ValueError(f"No annotation files found for sub-{subject:02d}_ses-{session:03d}")
     results = []
+    coverage_rows = []
     for annotation_file in annotation_files:
         try:
             run = extract_run_from_events_filename(annotation_file)
@@ -251,11 +300,12 @@ def process_all_runs_for_session(subject, session,
             continue
         print(f"  Processing run {run:02d}...")
         try:
-            merged_df = merge_variables_and_annotations_for_run(
-                subject, session, run, 
+            merged_df, coverage = merge_variables_and_annotations_for_run(
+                subject, session, run,
                 annotations_filepath=annotation_file,
                 per_session_combined_repvars_path=per_session_combined_repvars_path,
-                events_path=events_path
+                events_path=events_path,
+                screen_annotations_root=screen_annotations_root,
             )
             filepath = save_run_combined_tsv(merged_df, subject, session, run, per_run_combined_path)
             results.append({
@@ -266,7 +316,16 @@ def process_all_runs_for_session(subject, session,
                 'n_frames': len(merged_df),
                 'status': 'success'
             })
+            coverage.update({
+                'subject': subject,
+                'session': session,
+                'run': run,
+                'status': 'success',
+            })
+            coverage_rows.append(coverage)
             print(f"    Saved {len(merged_df)} frames to {filepath.name}")
+        except ScreenAnnotationError:
+            raise
         except Exception as e:
             results.append({
                 'subject': subject,
@@ -276,25 +335,56 @@ def process_all_runs_for_session(subject, session,
                 'n_frames': 0,
                 'status': f'failed: {str(e)}'
             })
+            coverage_rows.append({
+                'subject': subject,
+                'session': session,
+                'run': run,
+                'status': f'failed: {str(e)}',
+            })
             print(f"    Failed: {str(e)}")
-    return pd.DataFrame(results)
+    return pd.DataFrame(results), pd.DataFrame(coverage_rows)
 
 
 def process_all_run_merges(per_session_combined_repvars_path=PATHS['per_session_combined_repvars_tsvs'],
                            events_path=PATHS['bids_annotated_tsvs'],
-                           per_run_combined_path=PATHS['per_run_combined_repvars_and_bids_events']):
-    """Process all sessions and runs, creating merged run-level TSVs."""
-    sessions = find_all_replay_sessions()
+                           per_run_combined_path=PATHS['per_run_combined_repvars_and_bids_events'],
+                           screen_annotations_root=PATHS['screen_gameplay_annotations'],
+                           sessions=None):
+    """Process sessions and runs, creating merged run-level TSVs."""
+    if sessions is None:
+        sessions = find_all_replay_sessions()
     all_results = []
+    all_coverage = []
     for subject, session in sessions:
         print(f"Processing sub-{subject:02d}_ses-{session:03d}...")
         try:
-            results_df = process_all_runs_for_session(
-                subject, session, per_session_combined_repvars_path, events_path, per_run_combined_path
+            results_df, coverage_df = process_all_runs_for_session(
+                subject, session, per_session_combined_repvars_path, events_path,
+                per_run_combined_path, screen_annotations_root
             )
             all_results.append(results_df)
+            all_coverage.append(coverage_df)
+        except ScreenAnnotationError:
+            raise
         except Exception as e:
             print(f"  Failed entire session: {str(e)}")
+
+    coverage_path = Path(per_run_combined_path) / 'screen_annotation_coverage.tsv'
+    if all_coverage:
+        coverage = pd.concat(all_coverage, ignore_index=True)
+        if 'labels_seen' in coverage.columns:
+            coverage['labels_seen'] = coverage['labels_seen'].apply(
+                lambda value: '' if not isinstance(value, dict)
+                else ';'.join(f'{k}:{v}' for k, v in sorted(value.items())))
+        coverage.to_csv(coverage_path, sep='\t', index=False)
+        print(f"Saved Screen annotation coverage to: {coverage_path}")
+
+    load_or_collect_annotation_provenance(screen_annotations_root)
+    carry_provenance(
+        screen_annotations_root, per_run_combined_path, step='step2_merge',
+        command='python scripts/python/merge_bids_events_and_repvars.py',
+        extra={'coverage_file': str(coverage_path)})
+
     if all_results:
         return pd.concat(all_results, ignore_index=True)
     else:
@@ -302,25 +392,51 @@ def process_all_run_merges(per_session_combined_repvars_path=PATHS['per_session_
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description='Merge BIDS events and validated Screen/Gameplay annotations')
+    parser.add_argument(
+        '--group', default=None, choices=list(GROUP_REGISTRY),
+        help='Restrict processing to the train and test sessions of a group config. '
+             'Without this, all sessions found in the replay variables are processed.')
+    args = parser.parse_args()
+
+    if args.group is not None:
+        group = GROUP_REGISTRY[args.group]
+        sessions = sorted({
+            (subject_cfg['subject'], session)
+            for subject_cfg in group['subjects']
+            for session in subject_cfg['train_sessions'] + subject_cfg['test_sessions']
+        })
+        print(f"Restricting to {args.group}: {len(sessions)} subject-session pairs")
+    else:
+        sessions = None
+
     print("Merging BIDS events with replay variables...")
     print(f"Input paths:")
     print(f"  Session repvars: {PATHS['per_session_combined_repvars_tsvs']}")
     print(f"  BIDS events: {PATHS['bids_annotated_tsvs']}")
+    print(f"  Screen/Gameplay annotations: {PATHS['screen_gameplay_annotations']}")
     print(f"Output path: {PATHS['per_run_combined_repvars_and_bids_events']}")
     print()
-    
+
     merge_results = process_all_run_merges(
         per_session_combined_repvars_path=PATHS['per_session_combined_repvars_tsvs'],
         events_path=PATHS['bids_annotated_tsvs'],
-        per_run_combined_path=PATHS['per_run_combined_repvars_and_bids_events']
+        per_run_combined_path=PATHS['per_run_combined_repvars_and_bids_events'],
+        screen_annotations_root=PATHS['screen_gameplay_annotations'],
+        sessions=sessions,
     )
-    
+
+    if merge_results.empty:
+        raise SystemExit("No runs were merged; check the inputs and Screen annotation coverage.")
+
     print("\n" + "="*80)
     print("Merging complete!")
     print(f"Total runs processed: {len(merge_results)}")
     print(f"Successful: {(merge_results['status'] == 'success').sum()}")
     print(f"Failed: {(merge_results['status'] != 'success').sum()}")
-    
+
     if (merge_results['status'] != 'success').any():
         print("\nFailed runs:")
         print(merge_results[merge_results['status'] != 'success'][['subject', 'session', 'run', 'status']])
+        raise SystemExit(1)

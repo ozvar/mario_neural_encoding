@@ -2,9 +2,11 @@
 """
 Compute and visualize the behavioral feature correlation matrix for GROUP_N5_PRIMARY.
 
-Pools active (non-ITI) TRs across all subjects' training sessions and computes
-Pearson correlations across the 45 motor+scene features. Features are ordered
-by semantic group: motor first, then scene in config order.
+Pools feature-active (non-ITI) TRs across all subjects' training sessions and
+computes Pearson correlations across the 45 motor+scene features. This is the
+descriptive feature-activity sample, not the Screen/Gameplay mask used by the
+fit. Features are ordered by semantic group: motor first, then scene in config
+order.
 
 Usage:
     python check_feature_correlations.py [--output-dir PATH]
@@ -44,7 +46,7 @@ def load_subject_active_features(
 
     for session in train_sessions:
         metadata = load_practice_metadata(subject, session, paths['practice_phase_metadata'])
-        X_sess, feat_names = load_practice_features_with_names(
+        X_sess, feat_names, _ = load_practice_features_with_names(
             subject, session, metadata['practice_runs'], paths['per_run_downsampled_to_TR']
         )
         if feature_names is None:
@@ -54,7 +56,7 @@ def load_subject_active_features(
     X = np.vstack(X_list)
     active_mask = compute_baseline_mask(X, run_onsets=None, threshold=0.01)
     n_active = int(active_mask.sum())
-    logger.info(f"  sub-{subject:02d}: {n_active}/{len(active_mask)} active TRs "
+    logger.info(f"  sub-{subject:02d}: {n_active}/{len(active_mask)} feature-active TRs "
                 f"({n_active / len(active_mask) * 100:.1f}%)")
     return X[active_mask], feature_names
 
@@ -78,7 +80,7 @@ def pool_group_features(
     paths: dict,
     feature_spaces: dict,
 ) -> tuple[np.ndarray, list[str]]:
-    """Pool active-TR features across all subjects."""
+    """Pool feature-active-TR features across all subjects."""
     X_all = []
     ordered_names = None
 
@@ -106,11 +108,11 @@ def drop_zero_variance_features(
     X: np.ndarray,
     feature_names: list[str],
 ) -> tuple[np.ndarray, list[str]]:
-    """Drop features with zero variance in the pooled active-TR matrix."""
+    """Drop features with zero variance in the pooled feature-active-TR matrix."""
     valid = X.var(axis=0) > 1e-10
     dropped = [n for n, v in zip(feature_names, valid) if not v]
     if dropped:
-        logger.warning(f"Dropping {len(dropped)} zero-variance feature(s) on active TRs: {dropped}")
+        logger.warning(f"Dropping {len(dropped)} zero-variance feature(s) on feature-active TRs: {dropped}")
     return X[:, valid], [n for n, v in zip(feature_names, valid) if v]
 
 

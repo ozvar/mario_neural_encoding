@@ -10,10 +10,11 @@ def generate_experiment_id() -> str:
 
 
 def create_experiment_config(feature_spaces: dict, delays: list, solver: str,
-                            n_iter: int, alphas: list, baseline_filtering: bool) -> tuple:
+                            n_iter: int, alphas: list, baseline_filtering: bool,
+                            mask_config: dict = None) -> tuple:
     """
     Create experiment configuration dictionary.
-    
+
     Parameters:
     -----------
     feature_spaces : dict
@@ -27,7 +28,10 @@ def create_experiment_config(feature_spaces: dict, delays: list, solver: str,
     alphas : list or array
         Alpha values to test
     baseline_filtering : bool
-        
+        Legacy key kept for the deferred phase-randomization script
+    mask_config : dict, optional
+        Screen/Gameplay mask name, rule, threshold and provenance
+
     Returns:
     --------
     config : dict
@@ -50,6 +54,8 @@ def create_experiment_config(feature_spaces: dict, delays: list, solver: str,
             'baseline_filtering': baseline_filtering
         }
     }
+    if mask_config is not None:
+        config['preprocessing']['mask'] = mask_config
     return config, experiment_id
 
 

@@ -626,13 +626,13 @@ def main():
     logger.info(f"fMRI path: {fmri_path}")
 
     logger.info("Loading training data...")
-    X_train, Y_train, run_onsets_train, session_onsets_train, level_onsets_train, feature_names = concatenate_sessions_with_names(
+    X_train, Y_train, run_onsets_train, session_onsets_train, level_onsets_train, feature_names, _ = concatenate_sessions_with_names(
         args.subject, train_sessions, PATHS['practice_phase_metadata'],
         PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger
     )
 
     logger.info("Loading test data...")
-    X_test, Y_test, run_onsets_test, session_onsets_test, level_onsets_test, feature_names_test_original = concatenate_sessions_with_names(
+    X_test, Y_test, run_onsets_test, session_onsets_test, level_onsets_test, feature_names_test_original, _ = concatenate_sessions_with_names(
         args.subject, test_sessions, PATHS['practice_phase_metadata'],
         PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger
     )

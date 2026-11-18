@@ -6,12 +6,27 @@ the fMRI sampling rate (TR = 1.49s). Binary features are averaged (proportion ac
 continuous features are averaged within each TR window. Handles inter-trial intervals
 and post-task baseline by filling gaps with zeros to match fMRI acquisition length.
 """
+import argparse
+
 import pandas as pd
 import numpy as np
 import nibabel as nib
 from pathlib import Path
 from mario_encoding.config import PATHS, PARAMETERS
+from mario_encoding.group_configs import GROUP_N3_PRIMARY, GROUP_N5_PRIMARY
 from mario_encoding.utils.data_loading import get_fmri_filepath
+from mario_encoding.utils.screen_annotations import (
+    SCREEN_FRAME_COLUMNS,
+    SCREEN_METADATA_COLUMNS,
+    aggregate_screen_fractions,
+    carry_provenance,
+    validate_screen_metadata,
+)
+
+GROUP_REGISTRY = {
+    'GROUP_N3_PRIMARY': GROUP_N3_PRIMARY,
+    'GROUP_N5_PRIMARY': GROUP_N5_PRIMARY,
+}
 
 
 def identify_feature_types(df, metadata_cols=['TR_bin']):
@@ -27,7 +42,7 @@ def identify_feature_types(df, metadata_cols=['TR_bin']):
         Dataframe with features
     metadata_cols : list
         Columns to exclude from classification
-        
+
     Returns:
     --------
     binary_cols : list
@@ -35,7 +50,8 @@ def identify_feature_types(df, metadata_cols=['TR_bin']):
     continuous_cols : list
         Column names with other numeric values
     """
-    feature_cols = [col for col in df.columns if col not in metadata_cols]
+    excluded = set(metadata_cols) | set(SCREEN_FRAME_COLUMNS)
+    feature_cols = [col for col in df.columns if col not in excluded]
     binary_cols = []
     continuous_cols = []
     
@@ -180,28 +196,38 @@ def downsample_run_to_TR(df, subject, session, run, tr, fmri_path, pipeline, bin
     pd.DataFrame
         Downsampled features (one row per TR) with TR_index and TR_time columns
     """
+    missing_screen = set(SCREEN_FRAME_COLUMNS) - set(df.columns)
+    if missing_screen:
+        raise ValueError(
+            f"{subject}/{session}/{run}: missing Screen columns {sorted(missing_screen)}. "
+            "Regenerate steps 2-3 with the Screen/Gameplay annotations."
+        )
+
     n_trs_fmri = get_fmri_n_trs(subject, session, run, fmri_path, pipeline)
     df = create_TR_bins(df, tr)
     binary_cols, continuous_cols = identify_feature_types(df, metadata_cols=['TR_bin', 'frame_time_in_run'])
     all_feature_cols = binary_cols + continuous_cols
+    all_output_cols = all_feature_cols + list(SCREEN_METADATA_COLUMNS)
     tr_data_dict = {}
     for tr_bin, group in df.groupby('TR_bin'):
         if tr_bin >= n_trs_fmri:
             continue
         binary_agg = downsample_binary_features(group, binary_cols, method=binary_method)
         continuous_agg = downsample_continuous_features(group, continuous_cols, method=continuous_method)
-        tr_data = pd.concat([binary_agg, continuous_agg])
+        screen_agg = aggregate_screen_fractions(group)
+        tr_data = pd.concat([binary_agg, continuous_agg, screen_agg])
         tr_data_dict[tr_bin] = tr_data
     complete_data = []
     for tr_idx in range(n_trs_fmri):
         if tr_idx in tr_data_dict:
             complete_data.append(tr_data_dict[tr_idx])
         else:
-            baseline_row = pd.Series(0.0, index=all_feature_cols)
+            baseline_row = pd.Series(0.0, index=all_output_cols)
             complete_data.append(baseline_row)
     downsampled = pd.DataFrame(complete_data)
     downsampled.insert(0, 'TR_index', range(n_trs_fmri))
     downsampled.insert(1, 'TR_time', downsampled['TR_index'] * tr)
+    validate_screen_metadata(downsampled)
     return downsampled
 
 
@@ -327,7 +353,8 @@ def process_run_downsampling(filepath, tr, frame_rate, fmri_path, pipeline, bina
 
 def process_all_run_downsampling(tr, frame_rate, fmri_path, pipeline, binary_method='mean', continuous_method='mean',
                                  per_run_pruned_path=PATHS['per_run_pruned_features'],
-                                 per_run_downsampled_path=PATHS['per_run_downsampled_to_TR']):
+                                 per_run_downsampled_path=PATHS['per_run_downsampled_to_TR'],
+                                 sessions=None):
     """
     Process all run-level pruned feature files: downsample to TR.
 
@@ -355,6 +382,11 @@ def process_all_run_downsampling(tr, frame_rate, fmri_path, pipeline, binary_met
     pd.DataFrame with processing results for all runs
     """
     pruned_files = find_run_pruned_feature_files(per_run_pruned_path=per_run_pruned_path)
+    if sessions is not None:
+        pruned_files = [
+            filepath for filepath in pruned_files
+            if extract_subject_session_run_from_path(filepath)[:2] in sessions
+        ]
     if not pruned_files:
         raise ValueError(f"No pruned feature files found in {per_run_pruned_path}")
     print(f"Found {len(pruned_files)} run files to process")
@@ -385,6 +417,24 @@ def process_all_run_downsampling(tr, frame_rate, fmri_path, pipeline, binary_met
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description='Downsample behavioral features to TR')
+    parser.add_argument(
+        '--group', default=None, choices=list(GROUP_REGISTRY),
+        help='Restrict processing to the train and test sessions of a group config.')
+    args = parser.parse_args()
+
+    if args.group is not None:
+        group = GROUP_REGISTRY[args.group]
+        sessions = {
+            (subject_cfg['subject'], session)
+            for subject_cfg in group['subjects']
+            for session in subject_cfg['train_sessions'] + subject_cfg['test_sessions']
+        }
+        print(f"Restricting to {args.group}: {len(sessions)} subject-session pairs")
+    else:
+        sessions = None
+
     pipeline = PARAMETERS['preprocessing_pipeline']
     fmri_path = PATHS['hcp_data'] if pipeline == 'hcp' else PATHS['fmriprep_data']
 
@@ -404,9 +454,24 @@ if __name__ == '__main__':
         fmri_path=fmri_path,
         pipeline=pipeline,
         binary_method='mean',
-        continuous_method='mean'
+        continuous_method='mean',
+        sessions=sessions,
     )
-    
+
+    if results.empty:
+        raise SystemExit("No runs were downsampled; check the pruned feature inputs.")
+
+    carry_provenance(
+        PATHS['per_run_combined_repvars_and_bids_events'],
+        PATHS['per_run_downsampled_to_TR'],
+        step='step4_downsample',
+        command='python scripts/python/downsample_behav_data_to_TR.py',
+        extra={
+            'n_runs': int(len(results)),
+            'n_failed': int((results['status'] != 'success').sum()),
+        },
+    )
+
     print("\n" + "="*80)
     print("Processing complete!")
     print(f"Total runs processed: {len(results)}")
@@ -423,3 +488,4 @@ if __name__ == '__main__':
     if (results['status'] != 'success').any():
         print("\nFailed runs:")
         print(results[results['status'] != 'success'][['subject', 'session', 'run', 'status']])
+        raise SystemExit(1)

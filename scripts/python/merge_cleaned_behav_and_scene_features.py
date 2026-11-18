@@ -5,9 +5,17 @@ This script takes run-level TSVs (with replay variables and BIDS events merged),
 applies feature engineering transformations, and outputs pruned feature matrices
 ready for encoding model analysis.
 """
+import argparse
+
 import pandas as pd
 from pathlib import Path
 from mario_encoding.config import PATHS, PARAMETERS
+from mario_encoding.group_configs import GROUP_N3_PRIMARY, GROUP_N5_PRIMARY
+
+GROUP_REGISTRY = {
+    'GROUP_N3_PRIMARY': GROUP_N3_PRIMARY,
+    'GROUP_N5_PRIMARY': GROUP_N5_PRIMARY,
+}
 
 
 # Column groups to drop
@@ -223,9 +231,15 @@ def process_run_pruned_features(filepath, mastersheet_path, event_durations_dict
 
 def process_all_run_pruned_features(mastersheet_path, event_durations_dict, columns_to_drop_dict,
                                     per_run_combined_path=PATHS['per_run_combined_repvars_and_bids_events'],
-                                    per_run_pruned_path=PATHS['per_run_pruned_features']):
-    """Process all run-level combined files to create pruned feature sets."""
+                                    per_run_pruned_path=PATHS['per_run_pruned_features'],
+                                    sessions=None):
+    """Process run-level combined files to create pruned feature sets."""
     combined_files = find_run_combined_files(per_run_combined_path=per_run_combined_path)
+    if sessions is not None:
+        combined_files = [
+            filepath for filepath in combined_files
+            if extract_subject_session_run_from_path(filepath)[:2] in sessions
+        ]
     if not combined_files:
         raise ValueError(f"No combined run files found in {per_run_combined_path}")
     print(f"Found {len(combined_files)} run files to process")
@@ -253,27 +267,47 @@ def process_all_run_pruned_features(mastersheet_path, event_durations_dict, colu
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(
+        description='Engineer and prune behavioral and scene features')
+    parser.add_argument(
+        '--group', default=None, choices=list(GROUP_REGISTRY),
+        help='Restrict processing to the train and test sessions of a group config.')
+    args = parser.parse_args()
+
+    if args.group is not None:
+        group = GROUP_REGISTRY[args.group]
+        sessions = {
+            (subject_cfg['subject'], session)
+            for subject_cfg in group['subjects']
+            for session in subject_cfg['train_sessions'] + subject_cfg['test_sessions']
+        }
+        print(f"Restricting to {args.group}: {len(sessions)} subject-session pairs")
+    else:
+        sessions = None
+
     # Get mastersheet path - adjust if needed
     mastersheet_path = PATHS['src_python'].parent.parent.parent / 'mario.scenes' / 'sourcedata' / 'scenes_info' / 'scenes_mastersheet.csv'
-    
+
     print("Processing pruned features for all runs...")
     print(f"Input path: {PATHS['per_run_combined_repvars_and_bids_events']}")
     print(f"Output path: {PATHS['per_run_pruned_features']}")
     print(f"Mastersheet: {mastersheet_path}")
     print()
-    
+
     results = process_all_run_pruned_features(
         mastersheet_path=mastersheet_path,
         event_durations_dict=PARAMETERS['event_frame_duration_dict'],
-        columns_to_drop_dict=COLUMNS_TO_DROP
+        columns_to_drop_dict=COLUMNS_TO_DROP,
+        sessions=sessions,
     )
-    
+
     print("\n" + "="*80)
     print("Processing complete!")
     print(f"Total runs processed: {len(results)}")
     print(f"Successful: {(results['status'] == 'success').sum()}")
     print(f"Failed: {(results['status'] != 'success').sum()}")
-    
+
     if (results['status'] != 'success').any():
         print("\nFailed runs:")
         print(results[results['status'] != 'success'][['subject', 'session', 'run', 'status']])
+        raise SystemExit(1)

@@ -14,6 +14,7 @@ import gc
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from sklearn.preprocessing import StandardScaler
 from himalaya.backend import set_backend
 
@@ -28,6 +29,13 @@ from mario_encoding.utils.data_loading import (
     compute_baseline_mask,
     apply_delays_per_run,
     drop_baseline_samples,
+)
+from mario_encoding.utils.screen_annotations import (
+    SCREEN_METADATA_COLUMNS,
+    compute_screen_gameplay_mask,
+    gameplay_segments,
+    load_annotation_provenance,
+    validate_screen_metadata,
 )
 from mario_encoding.variance_partitioning import (
     map_features_to_spaces,
@@ -210,12 +218,13 @@ def fit_and_save_models_sequentially(X_train_list, Y_train, X_test_list, Y_test,
     return results
 
 
-def save_results(subject, train_sessions, test_sessions, results, 
+def save_results(subject, train_sessions, test_sessions, results,
                 feature_spaces_filtered, space_to_indices, valid_voxels_mask,
-                feature_names, valid_features_mask, output_dir, logger):
+                feature_names, valid_features_mask, output_dir, logger,
+                mask_info=None, annotation_provenance=None):
     """
     Save R2 scores, Fisher z transforms, product measures, and metadata.
-    
+
     Parameters:
     -----------
     subject : int
@@ -230,6 +239,10 @@ def save_results(subject, train_sessions, test_sessions, results,
     valid_features_mask : boolean array
     output_dir : Path
     logger : logging.Logger
+    mask_info : dict
+        Screen/Gameplay mask name, rule, threshold and retained counts
+    annotation_provenance : dict
+        Annotation commit and generation provenance
     """
     logger.info("="*80)
     logger.info("SAVING RESULTS")
@@ -288,7 +301,12 @@ def save_results(subject, train_sessions, test_sessions, results,
         'delays': PARAMETERS['variance_partitioning']['delays'],
         'feature_spaces_filtered': feature_spaces_filtered
     }
-    
+    assert_screen_metadata_absent(metadata['kept_feature_names'], 'kept features')
+    if mask_info is not None:
+        metadata['mask'] = mask_info
+    if annotation_provenance is not None:
+        metadata['annotation_provenance'] = annotation_provenance
+
     with open(metadata_file, 'w') as f:
         json.dump(metadata, f, indent=2)
     logger.info("  Saved [OK]")
@@ -302,6 +320,72 @@ def save_results(subject, train_sessions, test_sessions, results,
     logger.info(f"  Metadata: metadata.json")
     logger.info(f"  Voxel mask: valid_voxels_mask.npy")
     logger.info(f"  Features mask: valid_features_mask.npy")
+
+
+def save_screen_mask(output_dir, mask_name, rule, threshold,
+                     train_metadata, test_metadata, train_mask, test_mask,
+                     train_screen_mask, test_screen_mask, mask_applied,
+                     run_onsets_train, session_onsets_train,
+                     run_onsets_test, session_onsets_test, logger):
+    """Save the pre-drop Screen/Gameplay mask and its timing information."""
+    train_segments, train_bounds = gameplay_segments(train_mask, run_onsets_train)
+    test_segments, test_bounds = gameplay_segments(test_mask, run_onsets_test)
+
+    save_dict = {
+        'mask_name': np.array(mask_name),
+        'rule': np.array(rule),
+        'threshold': np.array(threshold, dtype=float),
+        'mask_applied': np.array(bool(mask_applied)),
+        'train_p': train_metadata['screen_gameplay'],
+        'test_p': test_metadata['screen_gameplay'],
+        'train_mask': train_mask,
+        'test_mask': test_mask,
+        'train_screen_mask': train_screen_mask,
+        'test_screen_mask': test_screen_mask,
+        'train_run_onsets': np.asarray(run_onsets_train, dtype=int),
+        'test_run_onsets': np.asarray(run_onsets_test, dtype=int),
+        'train_session_onsets': np.asarray(session_onsets_train, dtype=int),
+        'test_session_onsets': np.asarray(session_onsets_test, dtype=int),
+        'train_retained_indices': np.flatnonzero(train_mask),
+        'test_retained_indices': np.flatnonzero(test_mask),
+        'train_segment_ids': train_segments,
+        'test_segment_ids': test_segments,
+        'train_segment_bounds': train_bounds,
+        'test_segment_bounds': test_bounds,
+    }
+    for col in SCREEN_METADATA_COLUMNS:
+        save_dict[f'train_{col}'] = train_metadata[col]
+        save_dict[f'test_{col}'] = test_metadata[col]
+
+    path = output_dir / 'mask_screen_gameplay.npz'
+    np.savez_compressed(path, **save_dict)
+    logger.info(f"Saved Screen/Gameplay mask to: {path}")
+    logger.info(f"  Train: {int(train_mask.sum())}/{len(train_mask)} TRs, "
+                f"{len(train_bounds)} gameplay segments")
+    logger.info(f"  Test:  {int(test_mask.sum())}/{len(test_mask)} TRs, "
+                f"{len(test_bounds)} gameplay segments")
+    return path
+
+
+def log_old_new_mask_audit(legacy_mask, new_mask, label, logger):
+    """Log old/new mask agreement for the in-fit audit; new_mask controls retention."""
+    n = len(new_mask)
+    both = int(np.sum(legacy_mask & new_mask))
+    old_only = int(np.sum(legacy_mask & ~new_mask))
+    new_only = int(np.sum(~legacy_mask & new_mask))
+    neither = int(np.sum(~legacy_mask & ~new_mask))
+    logger.info(f"  {label}: legacy {int(legacy_mask.sum())}/{n} active, "
+                f"screen {int(new_mask.sum())}/{n} retained")
+    logger.info(f"    both {both}, legacy-only {old_only}, "
+                f"screen-only {new_only}, both dropped {neither}")
+
+
+def assert_screen_metadata_absent(feature_names, label):
+    """Fail if any screen metadata column leaked into the predictor list."""
+    contaminated = set(feature_names) & set(SCREEN_METADATA_COLUMNS)
+    if contaminated:
+        raise ValueError(
+            f"{label}: screen metadata columns leaked into X: {sorted(contaminated)}")
 
 
 def main():
@@ -324,8 +408,10 @@ def main():
     parser.add_argument('--cv-scheme', type=str, default='loro',
                        choices=['loro', 'loso'],
                        help='Cross-validation scheme: loro (leave-one-run-out) or loso (leave-one-session-out)')
-    parser.add_argument('--skip-baseline-filtering', action='store_true',
-                       help='Skip baseline/ITI filtering (use all TRs)')
+    parser.add_argument('--skip-gameplay-masking', '--skip-baseline-filtering',
+                       dest='skip_gameplay_masking', action='store_true',
+                       help='Skip Screen/Gameplay masking and use all TRs. '
+                            '--skip-baseline-filtering is a deprecated alias.')
     parser.add_argument('--compute-product-measure', action='store_true', default=True,
                        help='Compute product measure decomposition (default: True)')
     parser.add_argument('--no-compute-product-measure', action='store_false',
@@ -381,13 +467,20 @@ def main():
     logger.info("EXPERIMENT CONFIGURATION")
     logger.info("="*80)
     params = PARAMETERS['variance_partitioning']
+    mask_cfg = PARAMETERS['screen_gameplay_mask']
+    mask_config = {
+        'name': mask_cfg['name'],
+        'rule': mask_cfg['rule'],
+        'threshold': mask_cfg['threshold'],
+    }
     config, experiment_id = create_experiment_config(
         feature_spaces=FEATURE_SPACES,
         delays=params['delays'],
         solver=params['solver'],
         n_iter=params['solver_params']['n_iter'],
         alphas=params['solver_params']['alphas'],
-        baseline_filtering=not args.skip_baseline_filtering
+        baseline_filtering=not args.skip_gameplay_masking,
+        mask_config=mask_config,
     )
     logger.info(f"Experiment ID: {experiment_id}")
     logger.info(f"Timestamp: {config['timestamp']}")
@@ -395,15 +488,24 @@ def main():
     logger.info(f"Solver: {config['variance_partitioning']['solver']}")
     logger.info(f"N iterations: {config['variance_partitioning']['solver_params']['n_iter']}")
     logger.info(f"N alphas: {len(config['variance_partitioning']['solver_params']['alphas'])}")
-    logger.info(f"Baseline filtering: {config['preprocessing']['baseline_filtering']}")
-    
+    logger.info(f"Gameplay masking: {not args.skip_gameplay_masking}")
+    logger.info(f"Mask: {mask_config['name']} "
+                f"({mask_config['rule']} {mask_config['threshold']})")
+
+    annotation_provenance = load_annotation_provenance(
+        PATHS['per_run_downsampled_to_TR'])
+    config['annotation_provenance'] = annotation_provenance
+    source = annotation_provenance.get('source', {})
+    logger.info(f"Annotation provenance: mario {source.get('commit')}, "
+                f"videogames_utils {source.get('videogames_utils_commit')}")
+
     # Create output directory with experiment ID
     output_dir = get_output_directory(
         args.subject, train_sessions, test_sessions, experiment_id,
         PATHS['variance_partitioning']
     )
     logger.info(f"Output directory: {output_dir}")
-    
+
     # Save experiment config
     config_path = output_dir / 'config.json'
     logger.info(f"Saving config to: {config_path}")
@@ -420,19 +522,34 @@ def main():
     logger.info("="*80)
     
     logger.info("Loading training data...")
-    X_train, Y_train, run_onsets_train, session_onsets_train, level_onsets_train, feature_names = concatenate_sessions_with_names(
+    X_train, Y_train, run_onsets_train, session_onsets_train, level_onsets_train, feature_names, screen_meta_train = concatenate_sessions_with_names(
         args.subject, train_sessions, PATHS['practice_phase_metadata'],
-        PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger
+        PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger,
+        metadata_columns=SCREEN_METADATA_COLUMNS,
     )
-    
+
     logger.info("Loading test data...")
-    X_test, Y_test, run_onsets_test, session_onsets_test, level_onsets_test, feature_names_test_original = concatenate_sessions_with_names(
+    X_test, Y_test, run_onsets_test, session_onsets_test, level_onsets_test, feature_names_test_original, screen_meta_test = concatenate_sessions_with_names(
         args.subject, test_sessions, PATHS['practice_phase_metadata'],
-        PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger
+        PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger,
+        metadata_columns=SCREEN_METADATA_COLUMNS,
     )
-    
+
     if feature_names != feature_names_test_original:
         raise ValueError("Train and test data have different features before selection!")
+
+    if screen_meta_train is None or screen_meta_test is None:
+        raise ValueError("Screen metadata was not returned by the loader")
+    validate_screen_metadata(pd.DataFrame({
+        col: screen_meta_train[col] for col in SCREEN_METADATA_COLUMNS
+    }))
+    validate_screen_metadata(pd.DataFrame({
+        col: screen_meta_test[col] for col in SCREEN_METADATA_COLUMNS
+    }))
+    if len(screen_meta_train['screen_gameplay']) != X_train.shape[0]:
+        raise ValueError("Training screen metadata length does not match X")
+    if len(screen_meta_test['screen_gameplay']) != X_test.shape[0]:
+        raise ValueError("Test screen metadata length does not match X")
 
     # ========================================================================
     # SELECT FEATURES ACCORDING TO CONFIG
@@ -458,20 +575,58 @@ def main():
         raise ValueError("Feature selection masks differ between train and test data!")
     
     # ========================================================================
-    # COMPUTE BASELINE MASK (do not drop yet — needed for per-run delaying)
+    # SCREEN/GAMEPLAY MASK (do not drop yet, needed for per-run delaying)
     # ========================================================================
     logger.info("")
     logger.info("="*80)
-    logger.info("BASELINE MASK")
+    logger.info("SCREEN/GAMEPLAY MASK")
     logger.info("="*80)
 
-    if not args.skip_baseline_filtering:
-        active_mask_train = compute_baseline_mask(X_train, run_onsets_train, logger=logger)
-        active_mask_test = compute_baseline_mask(X_test, run_onsets_test, logger=logger)
+    assert_screen_metadata_absent(feature_names, 'training')
+    assert_screen_metadata_absent(feature_names_test, 'test')
+
+    screen_mask_train = compute_screen_gameplay_mask(
+        screen_meta_train['screen_gameplay'],
+        rule=mask_config['rule'], threshold=mask_config['threshold'], logger=logger)
+    screen_mask_test = compute_screen_gameplay_mask(
+        screen_meta_test['screen_gameplay'],
+        rule=mask_config['rule'], threshold=mask_config['threshold'], logger=logger)
+
+    # Legacy mask is computed for the audit only; it never controls retention.
+    legacy_mask_train = compute_baseline_mask(
+        X_train, run_onsets_train, logger=logger)
+    legacy_mask_test = compute_baseline_mask(
+        X_test, run_onsets_test, logger=logger)
+    log_old_new_mask_audit(legacy_mask_train, screen_mask_train, 'train', logger)
+    log_old_new_mask_audit(legacy_mask_test, screen_mask_test, 'test', logger)
+
+    if not args.skip_gameplay_masking:
+        active_mask_train = screen_mask_train
+        active_mask_test = screen_mask_test
     else:
-        logger.info("Skipping baseline filtering (using all TRs)")
+        logger.info("Skipping Screen/Gameplay masking (using all TRs)")
         active_mask_train = np.ones(X_train.shape[0], dtype=bool)
         active_mask_test = np.ones(X_test.shape[0], dtype=bool)
+
+    mask_info = {
+        'name': mask_config['name'],
+        'rule': mask_config['rule'],
+        'threshold': mask_config['threshold'],
+        'applied': not args.skip_gameplay_masking,
+        'file': 'mask_screen_gameplay.npz',
+        'n_train_total': int(len(active_mask_train)),
+        'n_train_retained': int(active_mask_train.sum()),
+        'n_train_screen_retained': int(screen_mask_train.sum()),
+        'n_test_total': int(len(active_mask_test)),
+        'n_test_retained': int(active_mask_test.sum()),
+        'n_test_screen_retained': int(screen_mask_test.sum()),
+    }
+    save_screen_mask(
+        output_dir, mask_config['name'], mask_config['rule'],
+        mask_config['threshold'], screen_meta_train, screen_meta_test,
+        active_mask_train, active_mask_test, screen_mask_train, screen_mask_test,
+        mask_info['applied'], run_onsets_train, session_onsets_train,
+        run_onsets_test, session_onsets_test, logger)
 
     # ========================================================================
     # FILTER ZERO-VARIANCE FEATURES AND VOXELS (on full data, ITI included)
@@ -516,7 +671,7 @@ def main():
     logger.info("PREPROCESSING")
     logger.info("="*80)
 
-    logger.info("Preprocessing training data (Y z-scored within runs, including baseline TRs)...")
+    logger.info("Preprocessing training data (Y z-scored within runs, including non-gameplay TRs)...")
     X_train, Y_train = preprocess_data(X_train, Y_train, run_onsets_train, level_onsets_train, logger)
 
     logger.info("Preprocessing test data...")
@@ -551,18 +706,18 @@ def main():
     logger.info(f"Applying FIR delays per run: {delays}")
     X_train_delayed = apply_delays_per_run(X_train, run_onsets_train, delays)
     X_test_delayed = apply_delays_per_run(X_test, run_onsets_test, delays)
-    logger.info(f"  Train delayed shape (pre-baseline-drop): {X_train_delayed.shape}")
-    logger.info(f"  Test delayed shape (pre-baseline-drop): {X_test_delayed.shape}")
+    logger.info(f"  Train delayed shape (pre-drop): {X_train_delayed.shape}")
+    logger.info(f"  Test delayed shape (pre-drop): {X_test_delayed.shape}")
 
     del X_train, X_test
     gc.collect()
 
     # ========================================================================
-    # DROP BASELINE TRs (after delays — preserves causal ITI context in lags)
+    # DROP NON-GAMEPLAY TRs (after delays: preserves causal lag context)
     # ========================================================================
     logger.info("")
     logger.info("="*80)
-    logger.info("DROPPING BASELINE TRs")
+    logger.info("DROPPING NON-GAMEPLAY TRs")
     logger.info("="*80)
 
     X_train_delayed, Y_train, run_onsets_train, session_onsets_train = drop_baseline_samples(
@@ -573,10 +728,10 @@ def main():
     )
     del active_mask_train, active_mask_test
     gc.collect()
-    logger.info("  Freed pre-drop X/Y and baseline masks [OK]")
+    logger.info("  Freed pre-drop X/Y and masks [OK]")
 
     # ========================================================================
-    # SELECT CV SCHEME (after baseline drop so onsets index active samples)
+    # SELECT CV SCHEME (after the drop so onsets index retained samples)
     # ========================================================================
     logger.info("")
     logger.info("="*80)
@@ -639,7 +794,8 @@ def main():
     save_results(
         args.subject, train_sessions, test_sessions, results,
         feature_spaces_filtered, space_to_indices, valid_voxels_mask,
-        feature_names, valid_features_mask, output_dir, logger
+        feature_names, valid_features_mask, output_dir, logger,
+        mask_info=mask_info, annotation_provenance=annotation_provenance,
     )
     
     # ========================================================================

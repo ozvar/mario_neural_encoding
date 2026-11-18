@@ -9,6 +9,9 @@ PATHS = {
     'replay_variables_jsons': PROJECT_DIR / '..' / 'mario.replays' / 'outputdata' / 'replays',
     'scene_clip_jsons': PROJECT_DIR / '..' / 'mario.scenes' / 'outputdata' / 'scene_clips',
     'bids_annotated_tsvs': PROJECT_DIR / '..' / 'mario.annotations' / 'outputdata' / 'annotated_events',
+    # Validated Screen/Gameplay annotations. The staging root holds the generated
+    # events, provenance and reconstruction records; see docs/refit_plan.md.
+    'screen_gameplay_annotations': PROJECT_DIR / '..' / 'mario_gen',
     # Preprocessed data directories
     'constants': PROJECT_DIR / 'inputs' / 'constants',
     'per_session_combined_repvars_tsvs': PROJECT_DIR / 'inputs' / 'per_session_combined_repvars_tsvs',
@@ -59,6 +62,14 @@ PARAMETERS = {
     },
     'TR': 1.49,
     'frame_rate': 60.099826520671044,  # frame rate given by retro emulator.em.get_screen_rate()
+
+    # Screen/Gameplay mask. Primary rule is p > 0. The later strict sensitivity
+    # rule is {'rule': 'equal', 'threshold': 1.0} for p == 1.
+    'screen_gameplay_mask': {
+        'name': 'screen_gameplay',
+        'rule': 'greater',
+        'threshold': 0.0,
+    },
     
     # Preprocessing pipeline selection: 'fmriprep' or 'hcp'
     'preprocessing_pipeline': 'hcp',

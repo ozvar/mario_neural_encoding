@@ -29,6 +29,7 @@ import logging
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
 from mario_encoding.config import PATHS, PARAMETERS, FEATURE_SPACES
@@ -39,9 +40,13 @@ from mario_encoding.utils.data_loading import (
     filter_zero_variance_features,
     filter_zero_variance_voxels,
     preprocess_data,
-    compute_baseline_mask,
     apply_delays_per_run,
     drop_baseline_samples,
+)
+from mario_encoding.utils.screen_annotations import (
+    SCREEN_METADATA_COLUMNS,
+    compute_screen_gameplay_mask,
+    validate_screen_metadata,
 )
 from mario_encoding.variance_partitioning import (
     map_features_to_spaces,
@@ -82,10 +87,14 @@ def load_fit_artifacts(vp_dir: Path, logger: logging.Logger) -> dict:
     voxel_mask_file = vp_dir / 'valid_voxels_mask.npy'
     feature_mask_file = vp_dir / 'valid_features_mask.npy'
     metadata_file = vp_dir / 'metadata.json'
+    mask_file = vp_dir / 'mask_screen_gameplay.npz'
 
-    for p in (weights_file, mean_file, voxel_mask_file, feature_mask_file, metadata_file):
+    for p in (weights_file, mean_file, voxel_mask_file, feature_mask_file,
+              metadata_file, mask_file):
         if not p.exists():
-            raise FileNotFoundError(f"Missing fit artifact: {p}")
+            raise FileNotFoundError(
+                f"Missing fit artifact: {p}. Fits without the Screen/Gameplay "
+                "mask must be refitted before permutation testing.")
 
     weights = np.load(weights_file)['weights_full']
     train_x_mean = np.load(mean_file)
@@ -93,40 +102,66 @@ def load_fit_artifacts(vp_dir: Path, logger: logging.Logger) -> dict:
     valid_features_mask = np.load(feature_mask_file)
     with open(metadata_file) as f:
         metadata = json.load(f)
+    mask_data = np.load(mask_file)
+    if 'mask' not in metadata:
+        raise ValueError(
+            f"metadata.json in {vp_dir} has no mask block; refit first.")
+    mask = {
+        'test_mask': mask_data['test_mask'],
+        'test_screen_mask': mask_data['test_screen_mask'],
+        'mask_applied': bool(mask_data['mask_applied']),
+        'rule': str(mask_data['rule']),
+        'threshold': float(mask_data['threshold']),
+    }
+    if (mask['rule'] != metadata['mask']['rule']
+            or not np.isclose(mask['threshold'], metadata['mask']['threshold'])):
+        raise ValueError(
+            "Saved mask rule or threshold does not match metadata.json; "
+            "fit output is inconsistent.")
 
     logger.info(f"Loaded weights: {weights.shape}")
     logger.info(f"Loaded train_x_mean: {train_x_mean.shape}")
     logger.info(f"Valid voxels: {int(valid_voxels_mask.sum())}/{len(valid_voxels_mask)}")
     logger.info(f"Valid features: {int(valid_features_mask.sum())}/{len(valid_features_mask)}")
+    logger.info(f"Screen/Gameplay mask: {mask['rule']} {mask['threshold']}, "
+                f"applied={mask['mask_applied']}, "
+                f"test retained={int(mask['test_mask'].sum())}/{len(mask['test_mask'])}")
     return {
         'weights': weights,
         'train_x_mean': train_x_mean,
         'valid_voxels_mask': valid_voxels_mask,
         'valid_features_mask': valid_features_mask,
         'metadata': metadata,
+        'mask': mask,
     }
 
 
 def prepare_test_data(subject: int, test_sessions: list, train_x_mean: np.ndarray,
                       valid_features_mask: np.ndarray, valid_voxels_mask: np.ndarray,
-                      logger: logging.Logger) -> dict:
+                      mask: dict, logger: logging.Logger) -> dict:
     """
     Recreate the same X_test_delayed / Y_test as the fit script produced.
 
     Reuses the exact pipeline from fit_variance_partitioning.py: load -> select
     features (config) -> apply saved valid_features_mask -> apply saved
     valid_voxels_mask -> preprocess Y -> apply saved train mean (NOT a fresh fit)
-    -> per-run delay -> drop baseline -> split per-space.
+    -> per-run delay -> drop retained TRs -> split per-space.
     """
     pipeline = PARAMETERS['preprocessing_pipeline']
     fmri_path = PATHS['hcp_data'] if pipeline == 'hcp' else PATHS['fmriprep_data']
 
     logger.info("Reloading test data...")
-    X_test, Y_test, run_onsets, session_onsets, level_onsets, feature_names = \
+    X_test, Y_test, run_onsets, session_onsets, level_onsets, feature_names, screen_meta = \
         concatenate_sessions_with_names(
             subject, test_sessions, PATHS['practice_phase_metadata'],
             PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger,
+            metadata_columns=SCREEN_METADATA_COLUMNS,
         )
+    if screen_meta is None:
+        raise ValueError("Screen metadata was not returned by the test loader")
+    validate_screen_metadata(pd.DataFrame({
+        col: screen_meta[col] for col in SCREEN_METADATA_COLUMNS
+    }))
 
     X_test, feature_names_sel, sel_mask = select_and_validate_features(
         X_test, feature_names, FEATURE_SPACES, logger,
@@ -147,7 +182,27 @@ def prepare_test_data(subject: int, test_sessions: list, train_x_mean: np.ndarra
         )
     Y_test = Y_test[:, valid_voxels_mask]
 
-    active_mask = compute_baseline_mask(X_test, run_onsets, logger=logger)
+    screen_mask = compute_screen_gameplay_mask(
+        screen_meta['screen_gameplay'], rule=mask['rule'],
+        threshold=mask['threshold'], logger=logger)
+    if screen_mask.shape[0] != mask['test_screen_mask'].shape[0]:
+        raise ValueError(
+            f"Recomputed screen mask has {screen_mask.shape[0]} TRs, saved fit mask "
+            f"has {mask['test_screen_mask'].shape[0]}; inputs changed.")
+    if not np.array_equal(screen_mask, mask['test_screen_mask']):
+        raise ValueError(
+            "Recomputed Screen/Gameplay mask does not match the fit's saved mask; "
+            "inputs or mask configuration changed since the fit.")
+    if mask['mask_applied']:
+        if not np.array_equal(mask['test_mask'], screen_mask):
+            raise ValueError("Saved active mask differs from the Screen/Gameplay mask.")
+    elif not np.all(mask['test_mask']):
+        raise ValueError("Fit skipped gameplay masking but its saved mask is not all True.")
+    active_mask = mask['test_mask']
+    if active_mask.shape[0] != X_test.shape[0]:
+        raise ValueError(
+            f"Saved test mask has {active_mask.shape[0]} TRs, loaded X has "
+            f"{X_test.shape[0]}; inputs changed since the fit.")
 
     X_test, Y_test = preprocess_data(X_test, Y_test, run_onsets, level_onsets, logger)
 
@@ -432,7 +487,7 @@ def run_one_subject(subject: int, train_sessions: list, test_sessions: list,
     test = prepare_test_data(
         subject, test_sessions, fit_artifacts['train_x_mean'],
         fit_artifacts['valid_features_mask'], fit_artifacts['valid_voxels_mask'],
-        logger,
+        fit_artifacts['mask'], logger,
     )
     Y_pred_full, Y_pred_per_band, _ = build_per_band_predictions(
         test['X_test_delayed'], fit_artifacts['weights'],

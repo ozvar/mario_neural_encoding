@@ -83,7 +83,7 @@ def load_exemplar_features(
     """
     metadata = load_practice_metadata(subject, session, paths['practice_phase_metadata'])
     run = metadata['practice_runs'][run_index]
-    X_sess, feat_names = load_practice_features_with_names(
+    X_sess, feat_names, _ = load_practice_features_with_names(
         subject, session, [run], paths['per_run_downsampled_to_TR']
     )
     available = set(feat_names)

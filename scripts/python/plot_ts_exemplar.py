@@ -14,11 +14,13 @@ Usage:
     python scripts/python/plot_ts_exemplar.py --group GROUP_N5_PRIMARY
 """
 import argparse
+import json
 import logging
 from pathlib import Path
 
 import nibabel as nib
 import numpy as np
+import pandas as pd
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
@@ -30,8 +32,12 @@ from mario_encoding.utils.data_loading import (
     concatenate_sessions_with_names,
     select_and_validate_features,
     preprocess_data,
-    compute_baseline_mask,
     apply_delays_per_run,
+)
+from mario_encoding.utils.screen_annotations import (
+    SCREEN_METADATA_COLUMNS,
+    compute_screen_gameplay_mask,
+    validate_screen_metadata,
 )
 from mario_encoding.variance_partitioning import (
     expand_feature_space_indices_for_delays,
@@ -144,11 +150,31 @@ def select_display_subject(group_cfg: dict, grayordinate: int,
 # ============================================================================
 
 def load_fit_artifacts(vp_dir: Path) -> dict:
+    mask_file = vp_dir / 'mask_screen_gameplay.npz'
+    metadata_file = vp_dir / 'metadata.json'
+    for path in (mask_file, metadata_file):
+        if not path.exists():
+            raise FileNotFoundError(
+                f"{path.name} not found in {vp_dir}; the fit predates the "
+                "Screen/Gameplay mask or is incomplete.")
+    with open(metadata_file) as handle:
+        metadata = json.load(handle)
+    if 'mask' not in metadata:
+        raise ValueError(f"metadata.json in {vp_dir} has no mask block; refit first.")
+    mask_data = np.load(mask_file)
+    mask = {
+        'test_mask': mask_data['test_mask'],
+        'test_screen_mask': mask_data['test_screen_mask'],
+        'mask_applied': bool(mask_data['mask_applied']),
+        'rule': str(mask_data['rule']),
+        'threshold': float(mask_data['threshold']),
+    }
     return {
         'weights':            np.load(vp_dir / 'weights_full.npz')['weights_full'],
         'train_x_mean':       np.load(vp_dir / 'train_x_mean.npy'),
         'valid_voxels_mask':  np.load(vp_dir / 'valid_voxels_mask.npy'),
         'valid_features_mask': np.load(vp_dir / 'valid_features_mask.npy'),
+        'mask':               mask,
     }
 
 
@@ -234,11 +260,17 @@ def load_display_data(subject: int, sub_cfg: dict, min_window: int,
 
     artifacts = load_fit_artifacts(vp_dir)
 
-    X, Y, run_onsets, session_onsets, level_onsets, feature_names = \
+    X, Y, run_onsets, session_onsets, level_onsets, feature_names, screen_meta = \
         concatenate_sessions_with_names(
             subject, sub_cfg['test_sessions'], PATHS['practice_phase_metadata'],
             PATHS['per_run_downsampled_to_TR'], fmri_path, pipeline, logger,
+            metadata_columns=SCREEN_METADATA_COLUMNS,
         )
+    if screen_meta is None:
+        raise ValueError("Screen metadata was not returned by the test loader")
+    validate_screen_metadata(pd.DataFrame({
+        col: screen_meta[col] for col in SCREEN_METADATA_COLUMNS
+    }))
 
     X, feature_names_sel, _ = select_and_validate_features(
         X, feature_names, FEATURE_SPACES, logger
@@ -251,7 +283,18 @@ def load_display_data(subject: int, sub_cfg: dict, min_window: int,
     X, Y = preprocess_data(X, Y, run_onsets, level_onsets, logger)
     X = X - artifacts['train_x_mean'][None, :]
 
-    active_mask = compute_baseline_mask(X, run_onsets, logger=logger)
+    mask_cfg = artifacts['mask']
+    screen_mask = compute_screen_gameplay_mask(
+        screen_meta['screen_gameplay'], rule=mask_cfg['rule'],
+        threshold=mask_cfg['threshold'], logger=logger)
+    if not np.array_equal(screen_mask, mask_cfg['test_screen_mask']):
+        raise ValueError(
+            "Recomputed Screen/Gameplay mask does not match the fit's saved mask.")
+    active_mask = mask_cfg['test_mask']
+    if active_mask.shape[0] != X.shape[0]:
+        raise ValueError(
+            f"Saved test mask has {active_mask.shape[0]} TRs, loaded X has "
+            f"{X.shape[0]}; inputs changed since the fit.")
 
     delays = PARAMETERS['variance_partitioning']['delays']
     X_delayed = apply_delays_per_run(X, run_onsets, delays)

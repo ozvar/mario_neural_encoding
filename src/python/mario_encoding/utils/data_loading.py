@@ -12,6 +12,8 @@ from pathlib import Path
 from voxelwise_tutorials.utils import zscore_runs
 from voxelwise_tutorials.delayer import Delayer
 
+from mario_encoding.utils.screen_annotations import ALL_METADATA_COLUMNS
+
 
 def get_fmri_filepath(subject: int, session: int, run: int, fmri_path: Path, pipeline: str) -> Path:
     """
@@ -101,40 +103,58 @@ def load_practice_metadata(subject, session, practice_metadata_path):
     return metadata
 
 
-def load_practice_features_with_names(subject, session, practice_runs, downsampled_path):
+def load_practice_features_with_names(subject, session, practice_runs, downsampled_path,
+                                      metadata_columns=None):
     """
     Load behavioral features for practice runs and return both data and column names.
-    
+
     IMPORTANT: Returns features in the order they appear in the TSV files.
     This is the source of truth for feature ordering.
-    
+
     Parameters:
     -----------
     subject : int
     session : int
     practice_runs : list of int
     downsampled_path : Path
-        
+    metadata_columns : list of str, optional
+        Columns to return as aligned metadata rather than predictors. They are
+        excluded from X and feature_names.
+
     Returns:
     --------
     X : array of shape (n_samples, n_features)
     feature_names : list of str
         Features in the order they appear in files
+    extra_metadata : dict of str -> array, or None
+        Requested metadata columns concatenated in run order.
     """
     X_list = []
     feature_names = None
-    
+    metadata_columns = list(metadata_columns) if metadata_columns else []
+    metadata_chunks = {col: [] for col in metadata_columns}
+
     for run in practice_runs:
-        filepath = (downsampled_path / f'sub-{subject:02d}' / f'ses-{session:03d}' / 
+        filepath = (downsampled_path / f'sub-{subject:02d}' / f'ses-{session:03d}' /
                    f'sub-{subject:02d}_ses-{session:03d}_run-{run:02d}_desc-downsampled.tsv')
         if not filepath.exists():
             raise FileNotFoundError(f"Downsampled features not found: {filepath}")
-        
+
         df = pd.read_csv(filepath, sep='\t')
-        
+
+        if metadata_columns:
+            missing = set(metadata_columns) - set(df.columns)
+            if missing:
+                raise ValueError(
+                    f"Metadata columns missing in {filepath.name}: {sorted(missing)}. "
+                    "Regenerate steps 2-4 with the Screen/Gameplay annotations."
+                )
+            for col in metadata_columns:
+                metadata_chunks[col].append(df[col].to_numpy())
+
         # Exclude metadata columns, keep feature columns in FILE order
-        feature_cols = [col for col in df.columns if col not in ['TR_index', 'TR_time', 'level', 'score', 'time', 'coins']]
-        
+        feature_cols = [col for col in df.columns if col not in ALL_METADATA_COLUMNS]
+
         # First run defines the canonical feature order
         if feature_names is None:
             feature_names = feature_cols
@@ -142,12 +162,21 @@ def load_practice_features_with_names(subject, session, practice_runs, downsampl
             # Verify all runs have same features in same order
             if feature_cols != feature_names:
                 raise ValueError(f"Feature column mismatch in run {run}. Expected {feature_names}, got {feature_cols}")
-        
+
         X_list.append(df[feature_cols].values)
-    
+
     X = np.vstack(X_list).astype('float32')
-    
-    return X, feature_names
+    extra_metadata = None
+    if metadata_columns:
+        extra_metadata = {
+            col: np.concatenate(chunks) for col, chunks in metadata_chunks.items()
+        }
+        for col, values in extra_metadata.items():
+            if len(values) != X.shape[0]:
+                raise ValueError(
+                    f"Metadata column {col} has {len(values)} rows, expected {X.shape[0]}")
+
+    return X, feature_names, extra_metadata
 
 
 def load_practice_fmri(subject: int, session: int, practice_runs: list, fmri_path: Path, pipeline: str) -> np.ndarray:
@@ -215,10 +244,11 @@ def validate_session_files(subject: int, session: int, metadata: dict,
 
 
 def load_session_data_with_names(subject: int, session: int, practice_metadata_path: Path,
-                                 downsampled_path: Path, fmri_path: Path, pipeline: str, logger):
+                                 downsampled_path: Path, fmri_path: Path, pipeline: str, logger,
+                                 metadata_columns=None):
     """
     Load all practice phase data for one session, returning feature names.
-    
+
     Parameters:
     -----------
     subject : int
@@ -229,7 +259,9 @@ def load_session_data_with_names(subject: int, session: int, practice_metadata_p
     pipeline : str
         'fmriprep' or 'hcp'
     logger : logging.Logger
-        
+    metadata_columns : list of str, optional
+        Columns carried as aligned metadata and excluded from X.
+
     Returns:
     --------
     X : array of shape (n_samples, n_features)
@@ -237,41 +269,51 @@ def load_session_data_with_names(subject: int, session: int, practice_metadata_p
     metadata : dict
     feature_names : list of str
         Features in FILE order
+    extra_metadata : dict of str -> array, or None
     """
     logger.info(f"Loading data for sub-{subject:02d} ses-{session:03d}")
-    
+
     metadata = load_practice_metadata(subject, session, practice_metadata_path)
     logger.info(f"  Found {metadata['n_runs']} practice runs: {metadata['practice_runs']}")
     logger.info(f"  Total samples: {metadata['n_samples']}")
     logger.info(f"  Total levels: {metadata['n_levels']}")
-    
+
     validate_session_files(subject, session, metadata, downsampled_path, fmri_path, pipeline)
     logger.info("  All required files validated")
-    
-    X, feature_names = load_practice_features_with_names(subject, session, metadata['practice_runs'], downsampled_path)
+
+    X, feature_names, extra_metadata = load_practice_features_with_names(
+        subject, session, metadata['practice_runs'], downsampled_path,
+        metadata_columns=metadata_columns)
     logger.info(f"  Loaded features: {X.shape}")
     logger.info(f"  Feature names (in file order): {len(feature_names)}")
-    
+
     Y = load_practice_fmri(subject, session, metadata['practice_runs'], fmri_path, pipeline)
     logger.info(f"  Loaded fMRI: {Y.shape}")
-    
+
     # Validate shapes
     if X.shape[0] != metadata['n_samples']:
         raise ValueError(f"Feature samples ({X.shape[0]}) != metadata n_samples ({metadata['n_samples']})")
     if Y.shape[0] != metadata['n_samples']:
         raise ValueError(f"fMRI samples ({Y.shape[0]}) != metadata n_samples ({metadata['n_samples']})")
-    
-    return X, Y, metadata, feature_names
+    if extra_metadata is not None:
+        for col, values in extra_metadata.items():
+            if len(values) != metadata['n_samples']:
+                raise ValueError(
+                    f"Metadata column {col} has {len(values)} rows, "
+                    f"expected {metadata['n_samples']}")
+
+    return X, Y, metadata, feature_names, extra_metadata
 
 
 def concatenate_sessions_with_names(subject: int, sessions: list, practice_metadata_path: Path,
-                                    downsampled_path: Path, fmri_path: Path, pipeline: str, logger):
+                                    downsampled_path: Path, fmri_path: Path, pipeline: str, logger,
+                                    metadata_columns=None):
     """
     Load and concatenate data from multiple sessions, preserving feature names.
-    
+
     IMPORTANT: Feature order comes from the first session's files and is preserved.
     All subsequent sessions are verified to have the same feature order.
-    
+
     Parameters:
     -----------
     subject : int
@@ -282,7 +324,9 @@ def concatenate_sessions_with_names(subject: int, sessions: list, practice_metad
     pipeline : str
         'fmriprep' or 'hcp'
     logger : logging.Logger
-        
+    metadata_columns : list of str, optional
+        Columns carried as aligned metadata and excluded from X.
+
     Returns:
     --------
     X : array of shape (n_samples_total, n_features)
@@ -292,6 +336,8 @@ def concatenate_sessions_with_names(subject: int, sessions: list, practice_metad
     level_onsets : array of int
     feature_names : list of str
         Features in FILE order from first session (source of truth)
+    extra_metadata : dict of str -> array, or None
+        Requested metadata columns concatenated in session and run order.
     """
     X_list = []
     Y_list = []
@@ -300,11 +346,24 @@ def concatenate_sessions_with_names(subject: int, sessions: list, practice_metad
     level_onsets_list = [0]
     cumulative_samples = 0
     feature_names = None
-    
+    metadata_columns = list(metadata_columns) if metadata_columns else []
+    metadata_chunks = {col: [] for col in metadata_columns}
+
     for session in sessions:
-        X_sess, Y_sess, metadata, feat_names = load_session_data_with_names(
-            subject, session, practice_metadata_path, downsampled_path, fmri_path, pipeline, logger
+        X_sess, Y_sess, metadata, feat_names, extra_metadata = load_session_data_with_names(
+            subject, session, practice_metadata_path, downsampled_path, fmri_path, pipeline, logger,
+            metadata_columns=metadata_columns
         )
+        if metadata_columns:
+            if extra_metadata is None:
+                raise ValueError(f"Session {session} returned no requested metadata")
+            for col in metadata_columns:
+                values = np.asarray(extra_metadata[col])
+                if len(values) != X_sess.shape[0]:
+                    raise ValueError(
+                        f"Session {session} metadata {col} has {len(values)} rows, "
+                        f"expected {X_sess.shape[0]}")
+                metadata_chunks[col].append(values)
         
         # First session defines canonical feature order
         if feature_names is None:
@@ -348,8 +407,20 @@ def concatenate_sessions_with_names(subject: int, sessions: list, practice_metad
     logger.info(f"  Total runs: {len(run_onsets)}")
     logger.info(f"  Total sessions: {len(session_onsets)}")
     logger.info(f"  Total levels: {len(level_onsets)}")
-    
-    return X, Y, run_onsets, session_onsets, level_onsets, feature_names
+
+    extra_metadata = None
+    if metadata_columns:
+        extra_metadata = {
+            col: np.concatenate(chunks) for col, chunks in metadata_chunks.items()
+        }
+        for col, values in extra_metadata.items():
+            if len(values) != X.shape[0]:
+                raise ValueError(
+                    f"Concatenated metadata {col} has {len(values)} rows, "
+                    f"expected {X.shape[0]}")
+        logger.info(f"  Metadata columns: {sorted(extra_metadata)}")
+
+    return X, Y, run_onsets, session_onsets, level_onsets, feature_names, extra_metadata
 
 
 def concatenate_level_labels(subject, sessions, practice_metadata_path, level_labels_path, logger=None):
@@ -428,10 +499,11 @@ def preprocess_data(X, Y, run_onsets, level_onsets, logger):
 
 def compute_baseline_mask(X, run_onsets, logger=None, threshold=0.01):
     """
-    Compute per-sample active-TR mask without dropping any data.
+    Compute the legacy feature-activity TR mask without dropping any data.
 
     A TR is active if sum(|X[t]|) > threshold. ITI/baseline TRs (all features
-    near zero) are marked inactive.
+    near zero) are marked inactive. This is kept for the old/new audit and
+    descriptive diagnostics; it no longer controls fit-time retention.
 
     Parameters:
     -----------
@@ -449,7 +521,7 @@ def compute_baseline_mask(X, run_onsets, logger=None, threshold=0.01):
     if logger is not None:
         n_active = int(active_mask.sum())
         n_total = len(active_mask)
-        logger.info(f"Baseline mask: {n_active}/{n_total} active TRs "
+        logger.info(f"Legacy feature-activity mask: {n_active}/{n_total} active TRs "
                     f"({n_active / n_total * 100:.1f}%)")
     return active_mask
 
@@ -488,10 +560,10 @@ def apply_delays_per_run(X, run_onsets, delays):
 
 def drop_baseline_samples(X_delayed, Y, run_onsets, session_onsets, active_mask, logger=None):
     """
-    Apply baseline mask to delayed X and Y simultaneously; remap onsets.
+    Apply a boolean TR mask to delayed X and Y simultaneously; remap onsets.
 
-    Run and session onsets are recomputed in the active-sample index space using
-    the per-sample cumulative active count, so they remain valid fold boundaries
+    Run and session onsets are recomputed in the retained-sample index space using
+    the per-sample cumulative kept count, so they remain valid fold boundaries
     for CV after the drop.
 
     Parameters:
@@ -521,9 +593,9 @@ def drop_baseline_samples(X_delayed, Y, run_onsets, session_onsets, active_mask,
 
     if logger is not None:
         n_dropped = n_samples - int(active_mask.sum())
-        logger.info(f"Dropped {n_dropped} baseline TRs "
+        logger.info(f"Dropped {n_dropped} non-gameplay TRs "
                     f"({n_dropped / n_samples * 100:.1f}%) post-delay")
-        logger.info(f"  Active TRs: {int(active_mask.sum())}")
+        logger.info(f"  Retained TRs: {int(active_mask.sum())}")
         logger.info(f"  Active run_onsets ({len(run_onsets_active)}): "
                     f"{run_onsets_active[:5].tolist()}{'...' if len(run_onsets_active) > 5 else ''}")
         logger.info(f"  Active session_onsets ({len(session_onsets_active)}): "
